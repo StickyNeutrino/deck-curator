@@ -6,6 +6,26 @@ import { inatGet, type InatTaxon } from "~/lib/inat";
 import { slugify } from "~/lib/ids";
 import { putFile } from "~/lib/store";
 
+/** iNat iconic_taxon_id → friendly filter names (ids verified against the
+ *  API: 3 Aves, 40151 Mammalia, 26036 Reptilia, 20978 Amphibia, 47178
+ *  Actinopterygii, 47158 Insecta, 47119 Arachnida, 47126 Plantae, 47170 Fungi). */
+const ICONIC_TAXON_NAMES: Record<number, string> = {
+  3: "Birds",
+  40151: "Mammals",
+  26036: "Reptiles",
+  20978: "Amphibians",
+  47178: "Fish",
+  47158: "Insects",
+  47119: "Arachnids",
+  47126: "Plants",
+  47170: "Fungi",
+};
+
+function taxonIconicName(t: InatTaxon): string {
+  const iconicId = (t as unknown as { iconic_taxon_id?: number }).iconic_taxon_id;
+  return (iconicId !== undefined && ICONIC_TAXON_NAMES[iconicId]) || (t as unknown as { iconic_taxon_name?: string }).iconic_taxon_name || "";
+}
+
 /**
  * Tab 2: iNaturalist search. A lat/lng radius (or worldwide) + optional taxon
  * filter lists matching taxa; adding one downloads its best CC photos into
@@ -46,28 +66,52 @@ export function InatTab({
     setError(null);
     setStatus("Searching iNaturalist…");
     try {
-      const params: Record<string, string | number | boolean | undefined> = {
-        per_page: 30,
-        order_by: "observations_count",
-        is_active: true,
-        taxon_name: taxonQuery.trim() || undefined,
+      // iNat's taxa endpoint can't filter geographically, so aggregate the
+      // taxa from observations recorded inside the circle — that's the
+      // "what lives here" list curators want.
+      const json = await inatGet<{
+        results: Array<{
+          taxon?: InatTaxon;
+          id: number;
+        }>;
+      }>("observations", {
         lat: lat && lng ? lat : undefined,
         lng: lat && lng ? lng : undefined,
         radius: lat && lng ? radius || "10" : undefined,
-      };
-      const json = await inatGet<{ results: InatTaxon[] }>("taxa", params);
-      const found = json.results
-        .filter((t) => t.rank === "species" || t.rank === "hybrid")
-        .map((t) => ({
-          id: t.id,
-          name: t.name,
-          common: t.preferred_common_name ?? null,
-          count: t.observations_count ?? 0,
+        per_page: 100,
+        photos: true,
+        order_by: "observed_on",
+      });
+      const counts = new Map<number, { taxon: InatTaxon; count: number }>();
+      for (const obs of json.results) {
+        const t = obs.taxon;
+        if (!t || !t.is_active || t.rank !== "species") continue;
+        const needle = taxonQuery.trim().toLowerCase();
+        if (
+          needle &&
+          !t.name.toLowerCase().includes(needle) &&
+          !(t.preferred_common_name ?? "").toLowerCase().includes(needle) &&
+          !taxonIconicName(t).toLowerCase().includes(needle)
+        ) {
+          continue;
+        }
+        const entry = counts.get(t.id);
+        if (entry) entry.count++;
+        else counts.set(t.id, { taxon: t, count: 1 });
+      }
+      const found = [...counts.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 30)
+        .map(({ taxon, count }) => ({
+          id: taxon.id,
+          name: taxon.name,
+          common: taxon.preferred_common_name ?? null,
+          count,
         }));
       setResults(found);
       setStatus(
         found.length
-          ? `Found ${found.length} species — the list prefers commonly observed ones. Add the ones you want.`
+          ? `Found ${found.length} species observed in the area — add the ones you want.`
           : "No species matched. Try a broader taxon filter or a bigger radius.",
       );
     } catch (err) {
