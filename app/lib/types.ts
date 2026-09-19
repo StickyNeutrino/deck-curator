@@ -6,6 +6,8 @@
  * manifest, plus curation-only extras (notes, ids).
  */
 
+import { uuid } from "./uuid";
+
 /** iNaturalist license_code vocabulary. ND variants and missing licenses are
  *  rejected for iNat photos (same policy as the Healthy Canyons pipeline);
  *  user uploads may also be "all-rights-reserved". */
@@ -95,7 +97,7 @@ export function makeCategory(id: string, label: string): ProjectCategory {
 
 export function makeSpecies(partial: Partial<SpeciesEntry> = {}): SpeciesEntry {
   return {
-    id: partial.id ?? crypto.randomUUID(),
+    id: partial.id ?? uuid(),
     category: partial.category ?? "",
     commonName: partial.commonName ?? "",
     sciName: partial.sciName ?? "",

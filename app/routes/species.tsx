@@ -6,6 +6,7 @@ import type { Project, SpeciesEntry, CardLayout } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
+import { uuid } from "~/lib/uuid";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Deck Curator — species" }];
@@ -296,7 +297,7 @@ function PhotosEditor({
       const role = isMain ? "main" : "secondary";
       onChange((d) => {
         d.photos.push({
-          id: `upload:${crypto.randomUUID()}`,
+          id: `upload:${uuid()}`,
           role,
           credit: { observer: "You", license: "all-rights-reserved" },
           fileKey,

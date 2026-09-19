@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import type { NativeStatus, Project, ProjectCategory, SpeciesEntry } from "./types";
 import { makeSpecies } from "./types";
 import { makeId, parseAltNames } from "./ids";
+import { uuid } from "./uuid";
 
 /**
  * Spreadsheet import: xlsx/csv → species list.
@@ -78,7 +79,7 @@ export function parseSpreadsheet(data: ArrayBuffer, filename: string): ImportRes
       const native = parseNative(str(row[findKey(headerMap, "native")]));
       const invasiveField = str(row[findKey(headerMap, "invasive")]);
       const entry: SpeciesEntry = makeSpecies({
-        id: crypto.randomUUID(),
+        id: uuid(),
         category: categoryId,
         commonName,
         sciName: sciNameRaw.replace(/\s+(ssp|subsp|var|f|forma)\.\s+/i, " "),
