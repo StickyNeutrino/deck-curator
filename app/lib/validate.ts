@@ -7,7 +7,7 @@ import type { Project } from "./types";
  */
 
 export interface ExportIssue {
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "info";
   message: string;
   species?: string;
 }
@@ -19,14 +19,15 @@ export function validateProject(project: Project): ExportIssue[] {
     const key = (s.commonName || s.sciName).trim();
     names.set(key, (names.get(key) ?? 0) + 1);
   }
-  for (const [name, count] of names) {
-    if (count > 1 && name) {
-      issues.push({
-        severity: "error",
-        message: `Duplicate card name “${name}” (${count}×) — card names must be unique across the deck.`,
-        species: name,
-      });
-    }
+  // Multiple cards per species are intentional (same species, different
+  // photos, so the photo can't be memorized); export names them "Name (2)".
+  const variantSpecies = [...names.entries()].filter(([, n]) => n > 1);
+  if (variantSpecies.length) {
+    const cards = variantSpecies.reduce((n, [, c]) => n + c, 0);
+    issues.push({
+      severity: "info",
+      message: `${variantSpecies.length} species appear on ${cards} cards — extras export as “Name (2)”, “Name (3)”… so each card stays uniquely addressable. Give the variants distinct photo sets for the best studying experience.`,
+    });
   }
   for (const s of project.species) {
     const label = s.commonName || s.sciName || "(unnamed species)";

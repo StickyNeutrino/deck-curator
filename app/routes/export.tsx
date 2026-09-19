@@ -121,10 +121,12 @@ export default function ExportPage() {
 function ValidationReport({ issues }: { issues: ExportIssue[] }) {
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");
+  const infos = issues.filter((i) => i.severity === "info");
+  const clean = errors.length === 0 && warnings.length === 0;
   return (
     <section data-testid="validation-report">
       <h2 className="font-semibold mb-2">
-        Review {errors.length === 0 && warnings.length === 0 && "— no issues 🎉"}
+        Review {clean && infos.length === 0 && "— no issues 🎉"}
       </h2>
       {issues.length > 0 && (
         <ul className="rounded-lg border bg-white divide-y" style={{ borderColor: "var(--border)" }}>
@@ -132,10 +134,17 @@ function ValidationReport({ issues }: { issues: ExportIssue[] }) {
             <li
               key={i}
               className="px-4 py-2 text-sm"
-              style={{ color: issue.severity === "error" ? "var(--danger)" : "var(--ink)" }}
+              style={{
+                color:
+                  issue.severity === "error"
+                    ? "var(--danger)"
+                    : issue.severity === "info"
+                      ? "var(--muted)"
+                      : "var(--ink)",
+              }}
               data-testid={`issue-${issue.severity}`}
             >
-              {issue.severity === "error" ? "✕ " : "⚠ "}
+              {issue.severity === "error" ? "✕ " : issue.severity === "info" ? "ℹ " : "⚠ "}
               {issue.message}
             </li>
           ))}

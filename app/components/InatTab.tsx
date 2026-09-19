@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react";
-import type { Project } from "~/lib/types";
+import { useCallback, useMemo, useState } from "react";
+import type { Project, SpeciesEntry } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
 import { candidatePhotos, pickDistinct, downloadPhoto, slotFromInatPhoto } from "~/lib/resolve";
 import { inatGet, type InatTaxon } from "~/lib/inat";
@@ -28,8 +28,10 @@ function taxonIconicName(t: InatTaxon): string {
 
 /**
  * Tab 2: iNaturalist search. A lat/lng radius (or worldwide) + optional taxon
- * filter lists matching taxa; adding one downloads its best CC photos into
- * the project with full credits. Photos per card sets the card layout.
+ * filter lists matching taxa; add them one by one, "Add all", or "+ Another"
+ * to create extra cards of a species you already have (different photos make
+ * the flashcard harder to memorize). Adding excludes photos already pinned on
+ * existing cards of that species, so variants genuinely differ.
  */
 
 interface TaxonResult {
@@ -37,6 +39,17 @@ interface TaxonResult {
   name: string;
   common: string | null;
   count: number;
+}
+
+/** iNat photo ids already used by these entries (slot ids look like `inat:123`). */
+function photoIdsInDeck(entries: SpeciesEntry[]): Set<string> {
+  const out = new Set<string>();
+  for (const s of entries) {
+    for (const p of s.photos) {
+      if (p.id.startsWith("inat:")) out.add(p.id.slice(5));
+    }
+  }
+  return out;
 }
 
 export function InatTab({
@@ -55,6 +68,34 @@ export function InatTab({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [photosPerCard, setPhotosPerCard] = useState(3);
+  const [busyName, setBusyName] = useState<string | null>(null);
+  const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
+
+  /** Existing cards per taxon — drives the "in deck" badges and "+ Another". */
+  const existing = useMemo(() => {
+    const byTaxon = new Map<number, SpeciesEntry[]>();
+    const bySci = new Map<string, SpeciesEntry[]>();
+    for (const s of project.species) {
+      if (s.taxonId != null) {
+        const list = byTaxon.get(s.taxonId) ?? [];
+        list.push(s);
+        byTaxon.set(s.taxonId, list);
+      }
+      if (s.sciName) {
+        const key = s.sciName.toLowerCase();
+        const list = bySci.get(key) ?? [];
+        list.push(s);
+        bySci.set(key, list);
+      }
+    }
+    return { byTaxon, bySci };
+  }, [project.species]);
+
+  const cardsFor = useCallback(
+    (r: TaxonResult): SpeciesEntry[] =>
+      existing.byTaxon.get(r.id) ?? existing.bySci.get(r.name.toLowerCase()) ?? [],
+    [existing],
+  );
 
   const search = useCallback(async () => {
     if (!taxonQuery.trim() && !(lat && lng)) {
@@ -110,7 +151,7 @@ export function InatTab({
       setResults(found);
       setStatus(
         found.length
-          ? `Found ${found.length} species observed in the area — add the ones you want.`
+          ? `Found ${found.length} species observed in the area — add them individually or all at once.`
           : "No species matched. Try a broader taxon filter or a bigger radius.",
       );
     } catch (err) {
@@ -121,18 +162,24 @@ export function InatTab({
     }
   }, [lat, lng, radius, taxonQuery]);
 
+  /**
+   * Add one search result as a card. When the species is already in the deck
+   * this creates an extra card ("variant"); `exclude` keeps its photos
+   * distinct from the cards already in the deck.
+   */
   const addResult = useCallback(
-    async (result: TaxonResult) => {
-      setStatus(`Fetching photos for ${result.name}…`);
+    async (result: TaxonResult, opts: { quiet?: boolean; exclude?: Set<string>; category?: string } = {}) => {
+      setBusyName(result.name);
       try {
-        const scope =
+        const photoScope =
           lat && lng
             ? { lat: Number(lat), lng: Number(lng), radiusKm: Number(radius) || 10 }
             : undefined;
-        const candidates = await candidatePhotos(result.id, scope);
+        const candidates = await candidatePhotos(result.id, photoScope, opts.exclude);
         const picked = pickDistinct(candidates, photosPerCard);
+        const existingCards = cardsFor(result);
         const entry = makeSpecies({
-          category: project.categories[0]?.id ?? "",
+          category: opts.category ?? existingCards[0]?.category ?? project.categories[0]?.id ?? "",
           sciName: result.name,
           commonName: result.common ?? "",
           taxonId: result.id,
@@ -155,15 +202,69 @@ export function InatTab({
         onChange((d) => {
           d.species.push(entry);
         });
-        setStatus(
-          `Added ${result.name}${entry.photos.length ? ` with ${entry.photos.length} photo(s)` : " (no CC photos found)"}.`,
-        );
+        if (!opts.quiet) {
+          setStatus(
+            existingCards.length
+              ? `Added another card for ${result.name}${entry.photos.length ? ` with ${entry.photos.length} new photo(s)` : " (no CC photos found)"}.`
+              : `Added ${result.name}${entry.photos.length ? ` with ${entry.photos.length} photo(s)` : " (no CC photos found)"}.`,
+          );
+        }
+        return entry;
       } catch (err) {
-        setStatus(`Could not add ${result.name}: ${err instanceof Error ? err.message : err}`);
+        if (!opts.quiet) {
+          setStatus(`Could not add ${result.name}: ${err instanceof Error ? err.message : err}`);
+        }
+        return null;
+      } finally {
+        setBusyName(null);
       }
     },
-    [lat, lng, radius, photosPerCard, project.id, project.categories, onChange],
+    [lat, lng, radius, photosPerCard, project.id, project.categories, cardsFor, onChange],
   );
+
+  /** Add every listed species that isn't in the deck yet. */
+  const addAll = useCallback(async () => {
+    const fresh = results.filter((r) => cardsFor(r).length === 0);
+    if (!fresh.length) {
+      setStatus("Every species in this search is already in the deck.");
+      return;
+    }
+    setBulk({ done: 0, total: fresh.length });
+    // Track photo usage locally: the loop's project prop is a snapshot, so
+    // exclusions for species added earlier in this run are kept here.
+    const usedByTaxon = new Map<number, Set<string>>();
+    for (const r of results) {
+      usedByTaxon.set(r.id, photoIdsInDeck(cardsFor(r)));
+    }
+    let added = 0;
+    let failed = 0;
+    for (let i = 0; i < fresh.length; i++) {
+      const r = fresh[i];
+      setBulk({ done: i, total: fresh.length });
+      setStatus(`Adding ${i + 1}/${fresh.length}: ${r.common ?? r.name}…`);
+      const entry = await addResult(r, {
+        quiet: true,
+        exclude: usedByTaxon.get(r.id),
+        category: project.categories[0]?.id,
+      });
+      if (entry) {
+        added++;
+        const used = usedByTaxon.get(r.id)!;
+        for (const p of entry.photos) {
+          if (p.id.startsWith("inat:")) used.add(p.id.slice(5));
+        }
+      } else {
+        failed++;
+      }
+    }
+    setBulk(null);
+    setStatus(
+      `Added ${added} of ${fresh.length} species${failed ? ` (${failed} failed — see console)` : ""}. Species already in the deck were skipped; use “+ Another” for extra cards.`,
+    );
+    if (failed) console.warn(`${failed} iNat adds failed during Add all`);
+  }, [results, cardsFor, addResult, project.categories]);
+
+  const freshCount = results.filter((r) => cardsFor(r).length === 0).length;
 
   return (
     <div data-testid="inat-tab">
@@ -206,7 +307,7 @@ export function InatTab({
             className="field"
             value={taxonQuery}
             onChange={(e) => setTaxonQuery(e.target.value)}
-            placeholder="plants, Aves, Dudleya…"
+            placeholder="plants, birds, Dudleya…"
             data-testid="inat-taxon-query"
           />
         </label>
@@ -216,10 +317,24 @@ export function InatTab({
         no all-rights-reserved) are offered, matching the app's license policy; every card carries
         the photographer credit.
       </p>
-      <div className="flex gap-2 items-center">
-        <button className="btn-primary" onClick={() => void search()} disabled={searching} data-testid="inat-search">
+      <div className="flex gap-2 items-center flex-wrap">
+        <button className="btn-primary" onClick={() => void search()} disabled={searching || bulk !== null} data-testid="inat-search">
           {searching ? "Searching…" : "Search"}
         </button>
+        {results.length > 0 && (
+          <button
+            className="btn-secondary"
+            onClick={() => void addAll()}
+            disabled={bulk !== null || freshCount === 0}
+            data-testid="inat-add-all"
+          >
+            {bulk
+              ? `Adding ${bulk.done + 1}/${bulk.total}…`
+              : freshCount === 0
+                ? "All added ✓"
+                : `Add all (${freshCount})`}
+          </button>
+        )}
         <label className="text-sm ml-auto">
           Photos per card{" "}
           <select
@@ -245,25 +360,44 @@ export function InatTab({
         </p>
       )}
       <ul className="mt-3 divide-y" style={{ borderColor: "var(--border)" }} data-testid="inat-results">
-        {results.map((r) => (
-          <li key={r.id} className="flex items-center justify-between py-2">
-            <div>
-              <span className="font-medium">{r.common ?? r.name}</span>{" "}
-              {r.common && (
-                <span className="italic text-sm" style={{ color: "var(--muted)" }}>
-                  {r.name}
-                </span>
-              )}
-              <div className="text-xs" style={{ color: "var(--muted)" }}>
-                {r.count.toLocaleString()} observations
+        {results.map((r) => {
+          const cards = cardsFor(r);
+          return (
+            <li key={r.id} className="flex items-center justify-between py-2">
+              <div>
+                <span className="font-medium">{r.common ?? r.name}</span>{" "}
+                {r.common && (
+                  <span className="italic text-sm" style={{ color: "var(--muted)" }}>
+                    {r.name}
+                  </span>
+                )}
+                <div className="text-xs" style={{ color: "var(--muted)" }}>
+                  {r.count.toLocaleString()} observations
+                  {cards.length > 0 && (
+                    <span data-testid={`in-deck-${r.id}`}>
+                      {" · "}in deck ({cards.length} card{cards.length > 1 ? "s" : ""})
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-            <button className="btn-secondary text-xs" onClick={() => void addResult(r)} data-testid={`add-inat-${r.id}`}>
-              + Add
-            </button>
-          </li>
-        ))}
+              <button
+                className="btn-secondary text-xs"
+                onClick={() =>
+                  void addResult(r, { exclude: photoIdsInDeck(cards), category: cards[0]?.category })
+                }
+                disabled={busyName !== null || bulk !== null}
+                data-testid={`add-inat-${r.id}`}
+              >
+                {busyName === r.name ? "Adding…" : cards.length ? "+ Another" : "+ Add"}
+              </button>
+            </li>
+          );
+        })}
       </ul>
+      <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
+        “+ Another” adds a second card of the same species with different photos — extras export
+        as “Name (2)” while the card back keeps the clean name, so the photo can't be memorized.
+      </p>
     </div>
   );
 }

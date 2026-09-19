@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { unzipSync } from "fflate";
-import { exportDeck, buildManifest } from "~/lib/export";
+import { exportDeck, buildManifest, cardExportNames } from "~/lib/export";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { saveProject, putFile } from "~/lib/store";
@@ -119,7 +119,7 @@ describe("deck export", () => {
 });
 
 describe("validation", () => {
-  it("flags duplicate names, missing licenses, unassigned categories", () => {
+  it("flags missing licenses and unassigned categories", () => {
     const project = newProject("Broken");
     const a = makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" });
     const b = makeSpecies({ commonName: "Oak", sciName: "Quercus x", category: "plants" });
@@ -129,13 +129,47 @@ describe("validation", () => {
 
     const issues = validateProject(project);
     const messages = issues.map((i) => i.message);
-    expect(messages.some((m) => m.includes("Duplicate card name"))).toBe(true);
     expect(messages.some((m) => m.includes("no license"))).toBe(true);
     expect(messages.some((m) => m.includes("not assigned to a category"))).toBe(true);
     expect(issues.some((i) => i.severity === "error")).toBe(true);
+    // Two "Oak" cards are intentional variants, not an error.
+    expect(messages.some((m) => m.includes("Duplicate card name"))).toBe(false);
+  });
+
+  it("notes multi-card species as info", () => {
+    const project = newProject("Variants");
+    project.species.push(
+      makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }),
+      makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }),
+    );
+    const issues = validateProject(project);
+    const info = issues.find((i) => i.severity === "info");
+    expect(info?.message).toContain("appear on 2 cards");
   });
 
   it("passes a clean deck", () => {
     expect(validateProject(sampleProject())).toEqual([]);
+  });
+});
+
+describe("variant card naming", () => {
+  it("dedupes export names deck-wide: first card plain, extras 'Name (2)'", () => {
+    const project = newProject("Variants");
+    const first = makeSpecies({ commonName: "Dudleya edulis", sciName: "Dudleya edulis", category: "plants" });
+    const second = makeSpecies({ commonName: "Dudleya edulis", sciName: "Dudleya edulis", category: "plants" });
+    const other = makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" });
+    project.species.push(first, other, second);
+
+    const names = cardExportNames(project);
+    expect(names.get(first.id)).toBe("Dudleya edulis");
+    expect(names.get(second.id)).toBe("Dudleya edulis (2)");
+    expect(names.get(other.id)).toBe("Oak");
+
+    const manifest = buildManifest(project) as any;
+    const cardNames = manifest.categories[0].cards.map((c: any) => c.name);
+    expect(cardNames).toEqual(["Dudleya edulis", "Oak", "Dudleya edulis (2)"]);
+    // The back still shows the clean common name on both variant cards.
+    expect(manifest.categories[0].cards[0].commonName).toBe("Dudleya edulis");
+    expect(manifest.categories[0].cards[2].commonName).toBe("Dudleya edulis");
   });
 });

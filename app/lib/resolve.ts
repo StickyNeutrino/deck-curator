@@ -120,10 +120,13 @@ export function looksLikeSciName(text: string): boolean {
   );
 }
 
-/** Candidate photos for a taxon, CC-licensed, most-voted first. */
+/** Candidate photos for a taxon, CC-licensed, most-voted first.
+ *  `excludePhotoIds` (raw iNat photo ids) filters out photos already used by
+ *  other cards of the same species, so variant cards show different images. */
 export async function candidatePhotos(
   taxonId: number,
   scope?: { lat: number; lng: number; radiusKm: number } | { placeId: number },
+  excludePhotoIds?: Set<string>,
 ): Promise<PhotoCandidate[]> {
   const results = await observations({
     taxonId,
@@ -140,6 +143,7 @@ export async function candidatePhotos(
       if (!isAllowedLicense(photo.license_code)) continue;
       const key = String(photo.id);
       if (seen.has(key)) continue;
+      if (excludePhotoIds?.has(key)) continue;
       seen.add(key);
       out.push({ photo, obs });
     }

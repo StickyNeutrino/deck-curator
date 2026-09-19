@@ -18,13 +18,14 @@ export interface ExportResult {
 }
 
 export function buildManifest(project: Project): object {
+  const exportNames = cardExportNames(project);
   const categories = project.categories
     .map((cat) => ({
       id: cat.id,
       label: cat.label,
       cards: project.species
         .filter((s) => s.category === cat.id)
-        .map((s) => cardFromSpecies(s)),
+        .map((s) => cardFromSpecies(s, exportNames.get(s.id) ?? (s.commonName || s.sciName))),
     }))
     .filter((cat) => cat.cards.length > 0 || project.species.some((s) => s.category === cat.id));
 
@@ -38,9 +39,29 @@ export function buildManifest(project: Project): object {
   };
 }
 
-export function cardFromSpecies(s: SpeciesEntry): object {
+/**
+ * Unique card names across the whole deck — the flashcards app keys the study
+ * queue and card lookup by `name`, so duplicates are impossible in a manifest.
+ * Intentional multi-card species (same species, different photos, to defeat
+ * photo memorization) get "Name (2)", "Name (3)"… in project order; the card
+ * back keeps showing the clean common name.
+ */
+export function cardExportNames(project: Project): Map<string, string> {
+  const seen = new Map<string, number>();
+  const names = new Map<string, string>();
+  for (const s of project.species) {
+    const base = (s.commonName || s.sciName || "Card").trim();
+    const key = base.toLowerCase();
+    const n = seen.get(key) ?? 0;
+    seen.set(key, n + 1);
+    names.set(s.id, n === 0 ? base : `${base} (${n + 1})`);
+  }
+  return names;
+}
+
+export function cardFromSpecies(s: SpeciesEntry, exportName?: string): object {
   return {
-    name: s.commonName || s.sciName,
+    name: exportName ?? (s.commonName || s.sciName),
     layout: s.layout,
     photos: s.photos.map((p) => ({
       file: `photos/${p.fileKey}`,

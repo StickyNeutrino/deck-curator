@@ -16,6 +16,7 @@ export function ListTab({
   const [text, setText] = useState("");
   const [category, setCategory] = useState(project.categories[0]?.id ?? "");
   const [enrich, setEnrich] = useState(true);
+  const [duplicates, setDuplicates] = useState<"skip" | "extra">("skip");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -55,20 +56,36 @@ export function ListTab({
       }
       if (offline) setStatus("iNaturalist unavailable — added names without enrichment.");
     }
-    onChange((d) => {
-      const existing = new Set(
-        d.species.map((s) => (s.sciName || s.commonName).toLowerCase()),
-      );
-      for (const e of entries) {
-        const key = (e.sciName || e.commonName).toLowerCase();
-        if (!key || existing.has(key)) continue;
-        d.species.push(e);
-        existing.add(key);
+    // Compute the merge against the current project snapshot, then apply it —
+    // keeps setStatus out of the state updater.
+    const seen = new Map<string, number>();
+    for (const s of project.species) {
+      const key = (s.sciName || s.commonName).toLowerCase();
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    const toAdd: SpeciesEntry[] = [];
+    let skipped = 0;
+    for (const e of entries) {
+      const key = (e.sciName || e.commonName).toLowerCase();
+      if (!key) continue;
+      const count = seen.get(key) ?? 0;
+      if (count > 0 && duplicates === "skip") {
+        skipped++;
+        continue;
       }
+      seen.set(key, count + 1);
+      toAdd.push(e);
+    }
+    onChange((d) => {
+      for (const e of toAdd) d.species.push(e);
     });
     setBusy(false);
-    if (!entries.some((e) => e.inatResolved)) setStatus(`Added ${entries.length} species.`);
-  }, [names, category, enrich, onChange]);
+    setStatus(
+      skipped
+        ? `Added ${toAdd.length} species (${skipped} already in the deck${toAdd.length ? " — pick “Add as extra cards” for variants" : ""}).`
+        : `Added ${toAdd.length} species.`,
+    );
+  }, [names, category, enrich, duplicates, project.species, onChange]);
 
   return (
     <div>
@@ -103,6 +120,18 @@ export function ListTab({
         <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
           <input type="checkbox" checked={enrich} onChange={(e) => setEnrich(e.target.checked)} />
           Look up on iNaturalist
+        </label>
+        <label className="text-sm">
+          If already in deck{" "}
+          <select
+            className="field !w-auto !py-1 inline-block"
+            value={duplicates}
+            onChange={(e) => setDuplicates(e.target.value as "skip" | "extra")}
+            data-testid="duplicate-mode"
+          >
+            <option value="skip">Skip</option>
+            <option value="extra">Add as extra cards</option>
+          </select>
         </label>
         <button
           className="btn-primary ml-auto"

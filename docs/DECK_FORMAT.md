@@ -108,5 +108,9 @@ Card canvas is a 750×1050 portrait card with background `#e4e3df`:
   (italic), family common, family latin (italic), native status, rarity —
   centered on the card, plus the white logo chip at top-left and the red
   invasive border applied by the app when `invasive` is true.
+- **Card names are unique deck-wide** (the app keys study order and lookup by
+  `name`). A species with several cards (same species, different photos) is
+  named "Name (2)", "Name (3)"…; render the back title from `commonName`
+  (falling back to `name`) so variant cards keep the clean species name.
 
 Both renderers derive everything from the manifest — no baked images.
