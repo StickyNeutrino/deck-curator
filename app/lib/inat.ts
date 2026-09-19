@@ -12,8 +12,6 @@ import { getCachedApi, putCachedApi } from "./store";
 
 const API_BASE = "https://api.inaturalist.org/v1/";
 
-export const USER_AGENT = "DeckCurator/1.0 (flashcard deck curation tool)";
-
 export interface InatTaxon {
   id: number;
   name: string;

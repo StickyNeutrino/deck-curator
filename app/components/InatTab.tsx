@@ -55,7 +55,6 @@ export function InatTab({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [photosPerCard, setPhotosPerCard] = useState(3);
-  const [addingIds, setAddingIds] = useState<Set<number>>(new Set());
 
   const search = useCallback(async () => {
     if (!taxonQuery.trim() && !(lat && lng)) {
