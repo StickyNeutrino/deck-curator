@@ -1,0 +1,51 @@
+{
+  "name": "deck-curator",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "Deck Curator: build and curate species flashcard decks for the San Diego flashcards app — from spreadsheets, iNaturalist searches, or typed lists",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "start": "npx serve ./build/client --single",
+    "typecheck": "react-router typegen && tsc",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest --coverage",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@react-router/node": "^7.9.2",
+    "@react-router/serve": "^7.9.2",
+    "fflate": "^0.8.2",
+    "idb": "^8.0.3",
+    "isbot": "^5.1.31",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router": "^7.9.2",
+    "serve": "^14.2.5",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@playwright/test": "^1.57.0",
+    "@react-router/dev": "^7.9.4",
+    "@tailwindcss/vite": "^4.1.13",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "fake-indexeddb": "^6.2.2",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^4.0.7"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

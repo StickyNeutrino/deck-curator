@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Deck Curator: a stack of cards with a leaf -->
+  <rect x="8" y="14" width="40" height="52" rx="5" fill="#e4e3df" stroke="#1f2a22" stroke-width="2.5"/>
+  <rect x="16" y="8" width="40" height="52" rx="5" fill="#fff" stroke="#1f2a22" stroke-width="2.5"/>
+  <path d="M36 18c-8 0-14 6-14 14 0 1.5.2 3 .7 4.4C27 34 31.5 31.6 36.5 31 30 33.5 25 38 23.5 44.6c2.2 1 4.6 1.4 7 1.4 8 0 14-6 14-14 0-5-3.5-9.5-8.5-14z" fill="#2d4a32"/>
+</svg>

@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/*
+  Deck Curator shares the flashcard app's visual language: Inter, the card
+  palette (#e4e3df card, #6b6b66 muted ink), and a calm green accent so the
+  two tools feel like one family. Card previews use the same geometry as the
+  spec in docs/DECK_FORMAT.md.
+*/
+
+:root {
+  --ink: #1f2a22;
+  --muted: #6b6b66;
+  --card-bg: #e4e3df;
+  --accent: #2d4a32;
+  --accent-soft: #e7efe8;
+  --danger: #b3261e;
+  --border: #d5d3cc;
+}
+
+html {
+  background: #f6f5f1;
+}
+
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--ink);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+/* ---------- form controls ---------- */
+
+.field {
+  @apply block w-full rounded-md border px-3 py-2 text-sm bg-white;
+  border-color: var(--border);
+}
+
+.field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.label {
+  @apply block text-xs font-semibold uppercase tracking-wide mb-1;
+  color: var(--muted);
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium cursor-pointer transition-colors;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium cursor-pointer transition-colors text-white;
+  background: var(--accent);
+}
+
+.btn-primary:hover {
+  filter: brightness(1.15);
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium cursor-pointer transition-colors bg-white;
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--accent-soft);
+}
+
+.btn-danger {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium cursor-pointer transition-colors bg-white;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.btn-secondary:disabled,
+.btn-primary:disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+/* ---------- card preview (mirrors docs/DECK_FORMAT.md) ---------- */
+
+.preview-card {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 750 / 1050;
+  background: var(--card-bg);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.18);
+}
+
+.preview-card .slot {
+  position: absolute;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #cfcecb;
+}
+
+.preview-card .slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.preview-card .credit {
+  position: absolute;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Back-of-card text stack (same proportions as the rendered Healthy Canyons backs) */
+.preview-back {
+  position: absolute;
+  inset: 0;
+  text-align: center;
+}
+
+.preview-back .title {
+  position: absolute;
+  top: 26.8%; /* 326px baseline ≈ 31% — title box sits above it */
+  left: 5%;
+  right: 5%;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.preview-back .alt-names {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.preview-back .sci-name {
+  font-style: italic;
+}
+
+.preview-back .logo-chip {
+  position: absolute;
+  top: 5.85%;
+  left: 8.2%;
+  width: 10.1%;
+  aspect-ratio: 1;
+  background: #fff;
+  border: 7px solid #000;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

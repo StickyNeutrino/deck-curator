@@ -1,0 +1,214 @@
+import {
+  autocompleteTaxon,
+  taxonDetail,
+  observations,
+  photoVariants,
+  isAllowedLicense,
+  type InatTaxon,
+  type InatObservation,
+  type InatPhoto,
+} from "./inat";
+import type { PhotoCredit, PhotoSlot } from "./types";
+
+/**
+ * Species resolution against iNaturalist, ported from the Healthy Canyons
+ * pipeline's fetch stage: rank-marker stripping, synonym-aware taxon
+ * selection, and CC-photo picking that prefers distinct observers.
+ */
+
+/** Rank markers ("ssp.", "var.", "f.") that iNat names omit. */
+const RANK_MARKER = /^(ssp|subsp|var|f|forma)\.?$/i;
+
+export function stripRankMarkers(query: string): string {
+  return query
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((w) => !RANK_MARKER.test(w))
+    .join(" ");
+}
+
+function isInfraspecificQuery(stripped: string): boolean {
+  return stripped.split(" ").length > 2;
+}
+
+/** Pick the best active taxon for a scientific-name query (pipeline logic). */
+export function chooseTaxon(results: InatTaxon[], query: string): InatTaxon | null {
+  const q = stripRankMarkers(query);
+  const words = q.split(" ");
+  const active = results.filter((t) => t.is_active);
+  const exact = active.filter(
+    (t) =>
+      t.name.toLowerCase() === q ||
+      (t.matched_term ?? "").toLowerCase().replace(/\s+/g, " ").trim() ===
+        query.toLowerCase().replace(/\s+/g, " ").trim(),
+  );
+  if (exact.length) {
+    const desiredLevel = words.length > 2 ? 5 : 10;
+    exact.sort((a, b) =>
+      Math.abs((a.rank_level ?? 0) - desiredLevel) - Math.abs((b.rank_level ?? 0) - desiredLevel) ||
+      (b.observations_count ?? 0) - (a.observations_count ?? 0));
+    return exact[0];
+  }
+  // Infraspecific queries never fall back below the exact taxon.
+  if (words.length > 2) return null;
+  // Synonym resolution: iNat returns the active replacement
+  // (e.g. Dendroica → Setophaga).
+  const synonymMatches = active.filter((t) => {
+    const parts = t.name.toLowerCase().split(" ");
+    return parts[0] === words[0] && parts[1] === words[1];
+  });
+  if (synonymMatches.length) {
+    synonymMatches.sort((a, b) =>
+      Math.abs((a.rank_level ?? 0) - 10) - Math.abs((b.rank_level ?? 0) - 10) ||
+      (b.observations_count ?? 0) - (a.observations_count ?? 0));
+    return synonymMatches[0];
+  }
+  return null;
+}
+
+export interface ResolvedTaxon {
+  taxonId: number;
+  sciName: string;
+  commonName: string | null;
+  familyId: number | null;
+  familyLatin: string | null;
+  familyCommon: string | null;
+  /** iNat's native/introduced flags, when present on the taxon record. */
+  native: "native" | "non-native" | "unknown";
+}
+
+export async function resolveTaxon(name: string): Promise<ResolvedTaxon | null> {
+  const stripped = stripRankMarkers(name);
+  const attempts = [stripped];
+  if (!isInfraspecificQuery(stripped) && name.trim().split(/\s+/).length > 2) {
+    attempts.push(stripped.split(" ").slice(0, 2).join(" "));
+  }
+  for (const attempt of attempts) {
+    const results = await autocompleteTaxon(attempt);
+    const chosen = chooseTaxon(results, attempt);
+    if (chosen) {
+      const detail = await taxonDetail(chosen.id);
+      const family = (detail?.ancestors ?? []).find((a) => a.rank === "family") ?? null;
+      return {
+        taxonId: chosen.id,
+        sciName: detail?.name ?? chosen.name,
+        commonName: detail?.preferred_common_name ?? chosen.preferred_common_name ?? null,
+        familyId: family?.id ?? null,
+        familyLatin: family?.name ?? null,
+        familyCommon: family?.preferred_common_name ?? null,
+        native: "unknown", // iNat's conservation status is place-specific; the curator edits this by hand
+      };
+    }
+  }
+  return null;
+}
+
+export interface PhotoCandidate {
+  photo: InatPhoto;
+  obs: InatObservation;
+}
+
+/** True when the string looks like a scientific name ("Quercus agrifolia"). */
+export function looksLikeSciName(text: string): boolean {
+  const words = text.trim().split(/\s+/);
+  return (
+    words.length >= 2 &&
+    /^[A-Z][a-z]+$/.test(words[0]) &&
+    /^[a-z][a-z-]+$/.test(words[1])
+  );
+}
+
+/** Candidate photos for a taxon, CC-licensed, most-voted first. */
+export async function candidatePhotos(
+  taxonId: number,
+  scope?: { lat: number; lng: number; radiusKm: number } | { placeId: number },
+): Promise<PhotoCandidate[]> {
+  const results = await observations({
+    taxonId,
+    perPage: 24,
+    lat: scope && "lat" in scope ? scope.lat : undefined,
+    lng: scope && "lng" in scope ? scope.lng : undefined,
+    radius: scope && "lat" in scope ? scope.radiusKm : undefined,
+    placeId: scope && "placeId" in scope ? scope.placeId : undefined,
+  });
+  const out: PhotoCandidate[] = [];
+  const seen = new Set<string>();
+  for (const obs of results) {
+    for (const photo of obs.photos ?? []) {
+      if (!isAllowedLicense(photo.license_code)) continue;
+      const key = String(photo.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ photo, obs });
+    }
+  }
+  return out;
+}
+
+/** Download an iNat photo (original, then large/medium) as a Blob. */
+export async function downloadPhoto(photo: InatPhoto): Promise<Blob> {
+  let lastErr: unknown;
+  for (const url of photoVariants(photo)) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength < 5000) continue;
+      return new Blob([buf], { type: "image/jpeg" });
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr ?? new Error("Photo download failed");
+}
+
+/**
+ * Take up to `max` photos from distinct observations, preferring distinct
+ * observers (the pipeline's pickPhotos).
+ */
+export function pickDistinct<T extends PhotoCandidate>(candidates: T[], max: number): T[] {
+  const picked: T[] = [];
+  const usedObs = new Set<number>();
+  const usedObservers = new Set<string>();
+  const remaining = [...candidates];
+  const observerOf = (c: PhotoCandidate) => c.obs.user?.name || c.obs.user?.login || "unknown";
+  while (picked.length < max && remaining.length) {
+    let idx = remaining.findIndex((c) => !usedObs.has(c.obs.id) && !usedObservers.has(observerOf(c)));
+    if (idx === -1) idx = remaining.findIndex((c) => !usedObs.has(c.obs.id));
+    if (idx === -1) idx = 0;
+    const [chosen] = remaining.splice(idx, 1);
+    picked.push(chosen);
+    usedObs.add(chosen.obs.id);
+    usedObservers.add(observerOf(chosen));
+  }
+  return picked;
+}
+
+export function creditForObservation(obs: InatObservation, photo: InatPhoto): PhotoCredit {
+  return {
+    observer: obs.user?.name || obs.user?.login || "unknown",
+    license: (photo.license_code ?? "").toLowerCase(),
+    sourceUrl: obs.uri || `https://www.inaturalist.org/observations/${obs.id}`,
+    observationId: obs.id,
+    placeLabel: obs.place_guess || undefined,
+  };
+}
+
+/** Build a PhotoSlot from a downloaded iNat photo. */
+export function slotFromInatPhoto(
+  photo: InatPhoto,
+  obs: InatObservation,
+  role: "main" | "secondary",
+  fileKey: string,
+  alt?: string,
+): PhotoSlot {
+  return {
+    id: `inat:${photo.id}`,
+    role,
+    credit: creditForObservation(obs, photo),
+    fileKey,
+    alt,
+  };
+}
