@@ -67,6 +67,11 @@ export function cardFromSpecies(s: SpeciesEntry, exportName?: string): object {
       file: `photos/${p.fileKey}`,
       role: p.role,
       alt: p.alt,
+      // Focal point for cover-cropping, only when it's off-center.
+      focus:
+        p.focus && (Math.abs(p.focus.x - 0.5) > 0.01 || Math.abs(p.focus.y - 0.5) > 0.01)
+          ? { x: round2(p.focus.x), y: round2(p.focus.y) }
+          : undefined,
       credit: creditFromSlot(p),
     })),
     sciName: s.sciName || undefined,
@@ -80,6 +85,10 @@ export function cardFromSpecies(s: SpeciesEntry, exportName?: string): object {
     taxonId: s.taxonId,
     credits: s.photos.map((p) => creditFromSlot(p)),
   };
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 export async function exportDeck(project: Project): Promise<ExportResult> {

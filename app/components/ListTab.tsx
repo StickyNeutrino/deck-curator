@@ -2,6 +2,10 @@ import { useCallback, useState } from "react";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
 import { looksLikeSciName, resolveTaxon } from "~/lib/resolve";
+import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
+
+/** The "file it automatically from iNaturalist" pseudo-option. */
+export const AUTO_CATEGORY = "__auto__";
 
 /** Tab 1: type or paste species names, one per line, optionally enriched
  *  against iNaturalist (scientific names resolve to common name + family). */
@@ -14,7 +18,7 @@ export function ListTab({
   onChange: (f: (d: Project) => void) => void;
 }) {
   const [text, setText] = useState("");
-  const [category, setCategory] = useState(project.categories[0]?.id ?? "");
+  const [category, setCategory] = useState(AUTO_CATEGORY);
   const [enrich, setEnrich] = useState(true);
   const [duplicates, setDuplicates] = useState<"skip" | "extra">("skip");
   const [status, setStatus] = useState<string | null>(null);
@@ -25,9 +29,12 @@ export function ListTab({
   const add = useCallback(async () => {
     if (!names.length) return;
     setBusy(true);
+    const fallbackCategory = project.categories[0]?.id ?? "plants";
     const entries: SpeciesEntry[] = names.map((n) =>
       makeSpecies({
-        category,
+        // AUTO is resolved per-entry after enrichment; a concrete category
+        // applies as-is.
+        category: category === AUTO_CATEGORY ? fallbackCategory : category,
         commonName: looksLikeSciName(n) ? "" : n,
         sciName: looksLikeSciName(n) ? n : "",
       }),
@@ -48,6 +55,9 @@ export function ListTab({
             entry.familyCommon = entry.familyCommon ?? taxon.familyCommon ?? undefined;
             entry.taxonId = taxon.taxonId;
             entry.inatResolved = true;
+            if (category === AUTO_CATEGORY) {
+              entry.category = categoryIdForIconic(project, taxon.iconicTaxonId);
+            }
           }
         } catch {
           offline = true;
@@ -77,7 +87,12 @@ export function ListTab({
       toAdd.push(e);
     }
     onChange((d) => {
-      for (const e of toAdd) d.species.push(e);
+      for (const e of toAdd) {
+        if (!d.categories.some((c) => c.id === e.category)) {
+          d.categories.push({ id: e.category, label: labelForCategoryId(e.category) });
+        }
+        d.species.push(e);
+      }
     });
     setBusy(false);
     setStatus(
@@ -85,7 +100,7 @@ export function ListTab({
         ? `Added ${toAdd.length} species (${skipped} already in the deck${toAdd.length ? " — pick “Add as extra cards” for variants" : ""}).`
         : `Added ${toAdd.length} species.`,
     );
-  }, [names, category, enrich, duplicates, project.species, onChange]);
+  }, [names, category, enrich, duplicates, project.species, project.categories, onChange]);
 
   return (
     <div>
@@ -109,7 +124,9 @@ export function ListTab({
             className="field !w-auto !py-1 inline-block"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
+            data-testid="list-category"
           >
+            {enrich && <option value={AUTO_CATEGORY}>Auto (from iNaturalist)</option>}
             {project.categories.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.label}

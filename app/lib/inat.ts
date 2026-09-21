@@ -20,6 +20,7 @@ export interface InatTaxon {
   is_active: boolean;
   preferred_common_name?: string;
   ancestry?: string;
+  iconic_taxon_id?: number;
   default_photo?: { license_code: string | null; attribution: string; url: string } | null;
   ancestors?: Array<{ id: number; name: string; rank: string; preferred_common_name?: string }>;
   matched_term?: string;

@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
-import { candidatePhotos, pickDistinct, downloadPhoto, slotFromInatPhoto } from "~/lib/resolve";
+import { candidatePhotos, pickDistinct, downloadPhoto, slotFromInatPhoto, fetchTaxonDetail } from "~/lib/resolve";
+import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
 import { inatGet, type InatTaxon } from "~/lib/inat";
 import { slugify } from "~/lib/ids";
 import { putFile } from "~/lib/store";
@@ -22,16 +23,17 @@ const ICONIC_TAXON_NAMES: Record<number, string> = {
 };
 
 function taxonIconicName(t: InatTaxon): string {
-  const iconicId = (t as unknown as { iconic_taxon_id?: number }).iconic_taxon_id;
+  const iconicId = t.iconic_taxon_id;
   return (iconicId !== undefined && ICONIC_TAXON_NAMES[iconicId]) || (t as unknown as { iconic_taxon_name?: string }).iconic_taxon_name || "";
 }
 
 /**
  * Tab 2: iNaturalist search. A lat/lng radius (or worldwide) + optional taxon
- * filter lists matching taxa; add them one by one, "Add all", or "+ Another"
- * to create extra cards of a species you already have (different photos make
- * the flashcard harder to memorize). Adding excludes photos already pinned on
- * existing cards of that species, so variants genuinely differ.
+ * filter lists the top species observed in the area (cap adjustable up to
+ * 200); "Add all" bulk-adds them with a progress bar, and "cards per species"
+ * creates N photo-distinct cards per species for anti-memorization variants.
+ * Species are filed into Plants/Fungi/Animals automatically from iNat's
+ * taxonomy, and family/scientific details are enriched from the same API.
  */
 
 interface TaxonResult {
@@ -39,6 +41,7 @@ interface TaxonResult {
   name: string;
   common: string | null;
   count: number;
+  iconicTaxonId: number | null;
 }
 
 /** iNat photo ids already used by these entries (slot ids look like `inat:123`). */
@@ -51,6 +54,8 @@ function photoIdsInDeck(entries: SpeciesEntry[]): Set<string> {
   }
   return out;
 }
+
+const RESULT_LIMITS = [10, 30, 50, 100, 200] as const;
 
 export function InatTab({
   project,
@@ -68,8 +73,10 @@ export function InatTab({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [photosPerCard, setPhotosPerCard] = useState(3);
+  const [resultLimit, setResultLimit] = useState<number>(30);
+  const [cardsPerSpecies, setCardsPerSpecies] = useState(1);
   const [busyName, setBusyName] = useState<string | null>(null);
-  const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
+  const [bulk, setBulk] = useState<{ done: number; total: number; label: string } | null>(null);
 
   /** Existing cards per taxon — drives the "in deck" badges and "+ Another". */
   const existing = useMemo(() => {
@@ -106,47 +113,52 @@ export function InatTab({
     setError(null);
     setStatus("Searching iNaturalist…");
     try {
-      // iNat's taxa endpoint can't filter geographically, so aggregate the
-      // taxa from observations recorded inside the circle — that's the
-      // "what lives here" list curators want.
-      const json = await inatGet<{
-        results: Array<{
-          taxon?: InatTaxon;
-          id: number;
-        }>;
-      }>("observations", {
-        lat: lat && lng ? lat : undefined,
-        lng: lat && lng ? lng : undefined,
-        radius: lat && lng ? radius || "10" : undefined,
-        per_page: 100,
-        photos: true,
-        order_by: "observed_on",
-      });
+      // iNat's taxa endpoint can't filter geographically, so aggregate taxa
+      // from observations inside the circle. per_page goes up to 200; a second
+      // page is fetched when the species cap needs more observations to reach.
+      const want = resultLimit;
       const counts = new Map<number, { taxon: InatTaxon; count: number }>();
-      for (const obs of json.results) {
-        const t = obs.taxon;
-        if (!t || !t.is_active || t.rank !== "species") continue;
-        const needle = taxonQuery.trim().toLowerCase();
-        if (
-          needle &&
-          !t.name.toLowerCase().includes(needle) &&
-          !(t.preferred_common_name ?? "").toLowerCase().includes(needle) &&
-          !taxonIconicName(t).toLowerCase().includes(needle)
-        ) {
-          continue;
+      const needle = taxonQuery.trim().toLowerCase();
+      const maxPages = Math.ceil(want / 40) + 1; // ~40-60 species per 100 observations typically
+      for (let page = 1; page <= Math.min(4, maxPages); page++) {
+        const json = await inatGet<{
+          results: Array<{ taxon?: InatTaxon; id: number }>;
+        }>("observations", {
+          lat: lat && lng ? lat : undefined,
+          lng: lat && lng ? lng : undefined,
+          radius: lat && lng ? radius || "10" : undefined,
+          per_page: 200,
+          page,
+          photos: true,
+          order_by: "observed_on",
+        });
+        for (const obs of json.results) {
+          const t = obs.taxon;
+          if (!t || !t.is_active || t.rank !== "species") continue;
+          const needle = taxonQuery.trim().toLowerCase();
+          if (
+            needle &&
+            !t.name.toLowerCase().includes(needle) &&
+            !(t.preferred_common_name ?? "").toLowerCase().includes(needle) &&
+            !taxonIconicName(t).toLowerCase().includes(needle)
+          ) {
+            continue;
+          }
+          const entry = counts.get(t.id);
+          if (entry) entry.count++;
+          else counts.set(t.id, { taxon: t, count: 1 });
         }
-        const entry = counts.get(t.id);
-        if (entry) entry.count++;
-        else counts.set(t.id, { taxon: t, count: 1 });
+        if (counts.size >= want || json.results.length < 200) break;
       }
       const found = [...counts.values()]
         .sort((a, b) => b.count - a.count)
-        .slice(0, 30)
+        .slice(0, want)
         .map(({ taxon, count }) => ({
           id: taxon.id,
           name: taxon.name,
           common: taxon.preferred_common_name ?? null,
           count,
+          iconicTaxonId: taxon.iconic_taxon_id ?? null,
         }));
       setResults(found);
       setStatus(
@@ -160,15 +172,17 @@ export function InatTab({
     } finally {
       setSearching(false);
     }
-  }, [lat, lng, radius, taxonQuery]);
+  }, [lat, lng, radius, taxonQuery, resultLimit]);
 
   /**
    * Add one search result as a card. When the species is already in the deck
    * this creates an extra card ("variant"); `exclude` keeps its photos
-   * distinct from the cards already in the deck.
+   * distinct from the cards already in the deck. Family/scientific details
+   * are enriched from the taxon detail API (cached), and the species is
+   * filed into Plants/Fungi/Animals from iNat's taxonomy.
    */
   const addResult = useCallback(
-    async (result: TaxonResult, opts: { quiet?: boolean; exclude?: Set<string>; category?: string } = {}) => {
+    async (result: TaxonResult, opts: { quiet?: boolean; exclude?: Set<string>; category?: string } = {}): Promise<SpeciesEntry | null> => {
       setBusyName(result.name);
       try {
         const photoScope =
@@ -178,12 +192,34 @@ export function InatTab({
         const candidates = await candidatePhotos(result.id, photoScope, opts.exclude);
         const picked = pickDistinct(candidates, photosPerCard);
         const existingCards = cardsFor(result);
+
+        // Scientific enrichment + category: one cached API call.
+        let category = opts.category;
+        let familyLatin: string | undefined;
+        let familyCommon: string | undefined;
+        let iconicTaxonId = result.iconicTaxonId;
+        try {
+          const detail = await fetchTaxonDetail(result.id);
+          if (detail) {
+            familyLatin = detail.familyLatin ?? undefined;
+            familyCommon = detail.familyCommon ?? undefined;
+            iconicTaxonId = detail.iconicTaxonId ?? iconicTaxonId;
+          }
+        } catch {
+          // iNat hiccup — the card still carries name + photos.
+        }
+        if (!category) {
+          category = categoryIdForIconic(project, iconicTaxonId);
+        }
+
         const entry = makeSpecies({
-          category: opts.category ?? existingCards[0]?.category ?? project.categories[0]?.id ?? "",
+          category,
           sciName: result.name,
           commonName: result.common ?? "",
           taxonId: result.id,
           inatResolved: true,
+          familyLatin,
+          familyCommon,
           layout: photosPerCard === 1 ? "photo-single" : "photo-trio",
         });
         for (let i = 0; i < picked.length; i++) {
@@ -200,6 +236,9 @@ export function InatTab({
           }
         }
         onChange((d) => {
+          if (!d.categories.some((c) => c.id === entry.category)) {
+            d.categories.push({ id: entry.category, label: labelForCategoryId(entry.category) });
+          }
           d.species.push(entry);
         });
         if (!opts.quiet) {
@@ -222,14 +261,15 @@ export function InatTab({
     [lat, lng, radius, photosPerCard, project.id, project.categories, cardsFor, onChange],
   );
 
-  /** Add every listed species that isn't in the deck yet. */
+  /** Add every listed species (cardsPerSpecies cards each, photo-distinct). */
   const addAll = useCallback(async () => {
     const fresh = results.filter((r) => cardsFor(r).length === 0);
     if (!fresh.length) {
       setStatus("Every species in this search is already in the deck.");
       return;
     }
-    setBulk({ done: 0, total: fresh.length });
+    const total = fresh.length * cardsPerSpecies;
+    setBulk({ done: 0, total, label: "" });
     // Track photo usage locally: the loop's project prop is a snapshot, so
     // exclusions for species added earlier in this run are kept here.
     const usedByTaxon = new Map<number, Set<string>>();
@@ -238,31 +278,31 @@ export function InatTab({
     }
     let added = 0;
     let failed = 0;
-    for (let i = 0; i < fresh.length; i++) {
-      const r = fresh[i];
-      setBulk({ done: i, total: fresh.length });
-      setStatus(`Adding ${i + 1}/${fresh.length}: ${r.common ?? r.name}…`);
-      const entry = await addResult(r, {
-        quiet: true,
-        exclude: usedByTaxon.get(r.id),
-        category: project.categories[0]?.id,
-      });
-      if (entry) {
-        added++;
-        const used = usedByTaxon.get(r.id)!;
-        for (const p of entry.photos) {
-          if (p.id.startsWith("inat:")) used.add(p.id.slice(5));
+    let done = 0;
+    for (const r of fresh) {
+      const used = usedByTaxon.get(r.id)!;
+      for (let c = 0; c < cardsPerSpecies; c++) {
+        done++;
+        setBulk({ done: done - 1, total, label: `${r.common ?? r.name}${cardsPerSpecies > 1 ? ` (card ${c + 1}/${cardsPerSpecies})` : ""}` });
+        setStatus(`Adding ${done}/${total}: ${r.common ?? r.name}…`);
+        const entry = await addResult(r, { quiet: true, exclude: used });
+        if (entry) {
+          added++;
+          for (const p of entry.photos) {
+            if (p.id.startsWith("inat:")) used.add(p.id.slice(5));
+          }
+        } else {
+          failed++;
         }
-      } else {
-        failed++;
       }
     }
     setBulk(null);
     setStatus(
-      `Added ${added} of ${fresh.length} species${failed ? ` (${failed} failed — see console)` : ""}. Species already in the deck were skipped; use “+ Another” for extra cards.`,
+      `Added ${added} of ${total} cards${failed ? ` (${failed} failed)` : ""}.` +
+        (cardsPerSpecies > 1 ? " Extra cards export as “Name (2)”, “Name (3)”… with different photos." : ""),
     );
     if (failed) console.warn(`${failed} iNat adds failed during Add all`);
-  }, [results, cardsFor, addResult, project.categories]);
+  }, [results, cardsFor, addResult, cardsPerSpecies]);
 
   const freshCount = results.filter((r) => cardsFor(r).length === 0).length;
 
@@ -313,9 +353,9 @@ export function InatTab({
         </label>
       </div>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-        Search lists the most-observed species in the circle. Only Creative Commons photos (no ND,
-        no all-rights-reserved) are offered, matching the app's license policy; every card carries
-        the photographer credit.
+        Search lists the most-observed species in the circle, filed automatically into
+        Plants / Fungi / Animals from iNaturalist's taxonomy. Only Creative Commons photos (no ND,
+        no all-rights-reserved) are offered; every card carries the photographer credit.
       </p>
       <div className="flex gap-2 items-center flex-wrap">
         <button className="btn-primary" onClick={() => void search()} disabled={searching || bulk !== null} data-testid="inat-search">
@@ -329,13 +369,41 @@ export function InatTab({
             data-testid="inat-add-all"
           >
             {bulk
-              ? `Adding ${bulk.done + 1}/${bulk.total}…`
+              ? `Adding…`
               : freshCount === 0
                 ? "All added ✓"
-                : `Add all (${freshCount})`}
+                : `Add all (${freshCount} species${cardsPerSpecies > 1 ? ` → ${freshCount * cardsPerSpecies} cards` : ""})`}
           </button>
         )}
         <label className="text-sm ml-auto">
+          Limit{" "}
+          <select
+            className="field !w-auto !py-1 inline-block"
+            value={resultLimit}
+            onChange={(e) => setResultLimit(Number(e.target.value))}
+            data-testid="inat-limit"
+            title="Maximum number of species listed per search"
+          >
+            {RESULT_LIMITS.map((n) => (
+              <option key={n} value={n}>top {n}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          Cards per species{" "}
+          <select
+            className="field !w-auto !py-1 inline-block"
+            value={cardsPerSpecies}
+            onChange={(e) => setCardsPerSpecies(Number(e.target.value))}
+            data-testid="inat-cards-per-species"
+            title="Multiple cards per species, each with different photos — harder to memorize"
+          >
+            {[1, 2, 3, 5].map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
           Photos per card{" "}
           <select
             className="field !w-auto !py-1 inline-block"
@@ -358,6 +426,24 @@ export function InatTab({
         <p className="text-sm mt-2" data-testid="inat-status" style={{ color: "var(--muted)" }}>
           {status}
         </p>
+      )}
+      {bulk && (
+        <div className="mt-2" data-testid="bulk-progress">
+          <div className="flex justify-between text-xs mb-1" style={{ color: "var(--muted)" }}>
+            <span>{bulk.label}</span>
+            <span>{bulk.done}/{bulk.total}</span>
+          </div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--border)" }}>
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${(bulk.done / bulk.total) * 100}%`, background: "var(--accent)" }}
+              role="progressbar"
+              aria-valuenow={bulk.done}
+              aria-valuemin={0}
+              aria-valuemax={bulk.total}
+            />
+          </div>
+        </div>
       )}
       <ul className="mt-3 divide-y" style={{ borderColor: "var(--border)" }} data-testid="inat-results">
         {results.map((r) => {

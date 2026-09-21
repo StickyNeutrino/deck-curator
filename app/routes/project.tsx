@@ -4,6 +4,8 @@ import { Link, useNavigate, useParams } from "react-router";
 import { getProject, saveProject } from "~/lib/store";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { AddSpeciesModal } from "~/components/AddSpeciesModal";
+import { CategoriesManager } from "~/components/CategoriesManager";
+import { EnrichButton } from "~/components/EnrichButton";
 import { serializeProjectFile, parseProjectFile } from "~/lib/projectFile";
 import { makeId } from "~/lib/ids";
 
@@ -64,6 +66,7 @@ export default function ProjectPage() {
         </Link>
       </nav>
       <ProjectHeader project={project} onChange={update} />
+      <CategoriesManager project={project} onChange={update} />
       <SpeciesTable
         project={project}
         onAdd={() => setShowAdd(true)}
@@ -79,6 +82,7 @@ export default function ProjectPage() {
         />
       )}
       <div className="mt-8 flex flex-wrap gap-2 border-t pt-6" style={{ borderColor: "var(--border)" }}>
+        <EnrichButton project={project} onChange={update} />
         <button
           className="btn-primary"
           data-testid="go-export"
@@ -267,7 +271,14 @@ function SpeciesTable({
                     invasive
                   </label>
                 </td>
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 text-right whitespace-nowrap">
+                  <button
+                    className="text-xs underline mr-3"
+                    onClick={() => onEdit(s.id)}
+                    data-testid={`edit-${s.id}`}
+                  >
+                    Edit
+                  </button>
                   <button
                     className="text-xs underline"
                     style={{ color: "var(--danger)" }}

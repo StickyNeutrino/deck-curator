@@ -4,6 +4,7 @@ import { candidatePhotos, pickDistinct, downloadPhoto, slotFromInatPhoto } from 
 import type { SpeciesEntry } from "~/lib/types";
 import { putFile } from "~/lib/store";
 import { slugify } from "~/lib/ids";
+import { photoCap } from "~/lib/cardGeometry";
 
 /**
  * iNaturalist photo browser for one species: shows CC-licensed observation
@@ -112,21 +113,35 @@ export function InatPhotoBrowser({
     setStatus(index ? `Added ${index} photo(s).` : "Could not download any photo.");
   }, [candidates, species, projectId, onChange]);
 
+  const cap = photoCap(species.layout);
+  const full = species.photos.length >= cap;
+
   return (
     <section className="mt-10 border-t pt-6" data-testid="inat-photo-browser">
       <div className="flex items-center gap-3 mb-3">
-        <h2 className="font-semibold">iNaturalist photos</h2>
+        <h2 className="font-semibold">
+          iNaturalist photos{" "}
+          <span className="text-xs font-normal" style={{ color: "var(--muted)" }}>
+            ({species.photos.length}/{cap})
+          </span>
+        </h2>
         <button className="btn-secondary text-sm" onClick={() => void load()} disabled={loading || !query}>
           {loading ? "Loading…" : "Search"}
         </button>
         <button
           className="btn-secondary text-sm"
           onClick={() => void autoPick()}
-          disabled={loading || !candidates.length}
+          disabled={loading || !candidates.length || full}
           data-testid="auto-pick"
+          title={full ? "Card is full — remove a photo first" : undefined}
         >
           Auto-pick
         </button>
+        {full && (
+          <span className="text-xs" style={{ color: "var(--muted)" }} data-testid="browser-full-note">
+            Card is full — remove a photo first.
+          </span>
+        )}
       </div>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
         Creative Commons photos only (the app's policy: no ND, no all-rights-reserved). The
@@ -145,7 +160,8 @@ export function InatPhotoBrowser({
               <button
                 className={`block w-full rounded overflow-hidden border-2 ${pickedIds.has(String(cand.photo.id)) ? "border-[var(--accent)]" : "border-transparent"}`}
                 onClick={() => void addPhoto(cand)}
-                title={`Add photo by ${cand.obs.user?.name || cand.obs.user?.login} (${cand.photo.license_code})`}
+                disabled={full && !picked}
+                title={full && !picked ? "Card is full — remove a photo first" : `Add photo by ${cand.obs.user?.name || cand.obs.user?.login} (${cand.photo.license_code})`}
                 data-testid={`inat-photo-${cand.photo.id}`}
               >
                 <img src={cand.photo.url.replace(/\/(square|thumb|small|medium)\./, "/medium.")} alt="" loading="lazy" className="aspect-square object-cover w-full" />

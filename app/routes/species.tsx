@@ -7,6 +7,7 @@ import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
 import { uuid } from "~/lib/uuid";
+import { photoCap, focusStyle } from "~/lib/cardGeometry";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Deck Curator — species" }];
@@ -269,6 +270,8 @@ function PhotosEditor({
   onChange: (f: (d: SpeciesEntry) => void) => void;
 }) {
   const uploadRef = useRef<HTMLInputElement>(null);
+  const cap = photoCap(species.layout);
+  const full = species.photos.length >= cap;
 
   const removePhoto = async (fileKey: string) => {
     await deleteFile(projectId, fileKey);
@@ -287,9 +290,27 @@ function PhotosEditor({
     });
   };
 
+  /** Swap a secondary photo with its neighbour (left ↔ right). */
+  const swap = (slotId: string, dir: -1 | 1) => {
+    onChange((d) => {
+      const idx = d.photos.findIndex((p) => p.id === slotId);
+      const target = idx + dir;
+      if (idx < 1 || target < 1 || target >= d.photos.length) return;
+      [d.photos[idx], d.photos[target]] = [d.photos[target], d.photos[idx]];
+    });
+  };
+
+  const setFocus = (slotId: string, focus: { x: number; y: number }) => {
+    onChange((d) => {
+      const slot = d.photos.find((p) => p.id === slotId);
+      if (slot) slot.focus = focus;
+    });
+  };
+
   const addUploads = async (files: File[], list: SpeciesEntry) => {
     let index = list.photos.length;
     for (const file of files) {
+      if (index >= cap) break; // hard-stop at the layout's cap
       const isMain = index === 0;
       const base = slugify(list.commonName || list.sciName || "photo");
       const fileKey = `${base}-${isMain ? "main" : `secondary-${index}`}.jpg`;
@@ -310,19 +331,42 @@ function PhotosEditor({
 
   return (
     <div className="mb-6" data-testid="photos-editor">
-      <span className="label">Photos</span>
+      <span className="label">
+        Photos ({species.photos.length}/{cap}
+        {species.layout === "photo-single" ? " — single layout" : ""})
+      </span>
+      {full && (
+        <p className="text-xs mb-2" data-testid="photos-full-note" style={{ color: "var(--muted)" }}>
+          Card is full — remove a photo before adding another.
+        </p>
+      )}
       <ul className="flex flex-wrap gap-3 mb-3">
-        {species.photos.map((slot) => (
+        {species.photos.map((slot, i) => (
           <li key={slot.id} className="w-36" data-testid={`photo-${slot.role}`}>
-            <PhotoThumb fileKey={slot.fileKey} projectId={projectId} />
+            <PhotoThumb
+              fileKey={slot.fileKey}
+              projectId={projectId}
+              focus={slot.focus}
+              onPickFocus={(x, y) => setFocus(slot.id, { x, y })}
+            />
             <div className="text-xs mt-1 truncate" title={`${slot.credit.observer} · ${slot.credit.license}`}>
               {slot.role === "main" ? "★ " : ""}{slot.credit.observer}
             </div>
             <div className="text-xs" style={{ color: "var(--muted)" }}>{slot.credit.license}</div>
-            <div className="flex gap-2 mt-1">
-              {slot.role !== "main" && (
-                <button className="text-xs underline" onClick={() => makeMain(slot.id)}>
-                  make main
+            <div className="flex flex-wrap gap-x-2 mt-1">
+              {slot.role !== "main" && i > 0 && (
+                <button className="text-xs underline" onClick={() => makeMain(slot.id)} data-testid={`make-main-${slot.id}`}>
+                  main
+                </button>
+              )}
+              {i > 1 && (
+                <button className="text-xs underline" onClick={() => swap(slot.id, -1)} aria-label="Move photo left">
+                  ←
+                </button>
+              )}
+              {slot.role === "secondary" && i < species.photos.length - 1 && (
+                <button className="text-xs underline" onClick={() => swap(slot.id, 1)} aria-label="Move photo right">
+                  →
                 </button>
               )}
               <button
@@ -353,14 +397,34 @@ function PhotosEditor({
           void addUploads(files, species);
         }}
       />
-      <button className="btn-secondary text-sm" onClick={() => uploadRef.current?.click()}>
+      <button
+        className="btn-secondary text-sm"
+        onClick={() => uploadRef.current?.click()}
+        disabled={full}
+        title={full ? `Card holds ${cap} photo(s) — remove one first.` : undefined}
+        data-testid="upload-photos"
+      >
         Upload photos…
       </button>
+      <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
+        Click a photo to set its focal point — the crop keeps that spot in frame (e.g. the organism
+        in a portrait photo).
+      </p>
     </div>
   );
 }
 
-function PhotoThumb({ fileKey, projectId }: { fileKey: string; projectId: string }) {
+function PhotoThumb({
+  fileKey,
+  projectId,
+  onPickFocus,
+  focus,
+}: {
+  fileKey: string;
+  projectId: string;
+  onPickFocus: (x: number, y: number) => void;
+  focus?: { x: number; y: number };
+}) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     let url: string | null = null;
@@ -375,6 +439,33 @@ function PhotoThumb({ fileKey, projectId }: { fileKey: string; projectId: string
       if (url) URL.revokeObjectURL(url);
     };
   }, [fileKey, projectId]);
+
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!onPickFocus || !src) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    onPickFocus((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
+  };
+
   if (!src) return <div className="w-36 rounded bg-[#cfcecb] aspect-[4/3]" />;
-  return <img src={src} alt="" className="w-36 rounded object-cover aspect-[4/3]" />;
+  return (
+    <div
+      className="relative w-36 rounded overflow-hidden aspect-[4/3] cursor-crosshair"
+      onClick={handleClick}
+      title="Click to set the focal point (what the crop keeps centered)"
+      data-testid="photo-thumb"
+    >
+      <img src={src} alt="" className="w-full h-full object-cover" style={focusStyle(focus)} />
+      {focus && (
+        <span
+          aria-hidden
+          className="absolute w-3 h-3 rounded-full border-2 border-white shadow"
+          style={{
+            left: `calc(${focus.x * 100}% - 6px)`,
+            top: `calc(${focus.y * 100}% - 6px)`,
+            background: "var(--accent)",
+          }}
+        />
+      )}
+    </div>
+  );
 }

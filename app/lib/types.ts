@@ -50,6 +50,9 @@ export interface PhotoSlot {
   /** Key into the project's file store (the Blob lives in IndexedDB). */
   fileKey: string;
   alt?: string;
+  /** Focal point for cover-cropping non-square photos, 0..1 each
+   *  (0.5/0.5 = centered). Click a photo in the editor to set. */
+  focus?: { x: number; y: number };
 }
 
 export interface SpeciesEntry {

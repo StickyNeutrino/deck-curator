@@ -53,6 +53,7 @@ pre-rendered JPGs) — they keep working exactly as before.
       "file": "photos/dwarf-nettle-main.jpg",  // relative to the archive root, URL-encoded when served
       "role": "main",                          // "main" | "secondary"
       "alt": "Flowering stalk, close-up",      // optional alt text
+      "focus": { "x": 0.5, "y": 0.3 },         // optional focal point (0..1) for cover-cropping; default center
       "credit": { /* PhotoCredit, below — REQUIRED for every photo */ }
     }
   ],
@@ -103,6 +104,10 @@ Card canvas is a 750×1050 portrait card with background `#e4e3df`:
 - **Front, `photo-single`**: the main photo fills the same slot as the trio's
   main slot (650×604 at 50,48) — identical to a trio with no secondaries.
   A deck that uses only single-photo cards renders like a "one big photo" deck.
+- **Focal point**: photos are cover-cropped to their slot. `photos[].focus`
+  ({x, y} in 0..1, default 0.5/0.5) positions the crop — e.g. `{x: 0.5, y: 0.2}`
+  keeps a bird near the top of a portrait photo visible. Renderers apply this
+  as `object-position: x% y%`.
 - **Back**: same text stack as the Healthy Canyons rendered backs — title
   (700 weight, 72px, auto-shrink), `aka` alt-names line, scientific name
   (italic), family common, family latin (italic), native status, rarity —

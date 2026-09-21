@@ -55,3 +55,16 @@ export function rectStyle(rect: Rect): React.CSSProperties {
     height: `${(rect.height / CARD_H) * 100}%`,
   };
 }
+
+/** object-position for a photo's focal point (default: centered). */
+export function focusStyle(focus?: { x: number; y: number }): React.CSSProperties {
+  if (!focus) return {};
+  const x = Math.min(1, Math.max(0, focus.x)) * 100;
+  const y = Math.min(1, Math.max(0, focus.y)) * 100;
+  return { objectPosition: `${x}% ${y}%` };
+}
+
+/** Max photos a card can hold for its layout (mirrors the renderer's slots). */
+export function photoCap(layout: "photo-trio" | "photo-single"): number {
+  return layout === "photo-single" ? 1 : 3;
+}

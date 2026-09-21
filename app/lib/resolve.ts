@@ -77,6 +77,39 @@ export interface ResolvedTaxon {
   familyCommon: string | null;
   /** iNat's native/introduced flags, when present on the taxon record. */
   native: "native" | "non-native" | "unknown";
+  /** iNat iconic_taxon_id — classifies the species into Plants/Animals/etc. */
+  iconicTaxonId?: number;
+}
+
+/** iNat iconic_taxon_id → deck category label (ids verified against the API). */
+export const ICONIC_CATEGORY: Record<number, "Plants" | "Fungi" | "Animals"> = {
+  47126: "Plants",
+  47170: "Fungi",
+};
+
+/** Every other iconic group (birds, mammals, insects, …) is an animal. */
+export function categoryLabelForIconic(iconicTaxonId: number | null | undefined): "Plants" | "Fungi" | "Animals" {
+  if (iconicTaxonId === 47126) return "Plants";
+  if (iconicTaxonId === 47170) return "Fungi";
+  return "Animals";
+}
+
+/** Family + common name + iconic group for a known taxon id (cached by inatGet). */
+export async function fetchTaxonDetail(taxonId: number): Promise<{
+  commonName: string | null;
+  familyLatin: string | null;
+  familyCommon: string | null;
+  iconicTaxonId: number | null;
+} | null> {
+  const detail = await taxonDetail(taxonId);
+  if (!detail) return null;
+  const family = (detail.ancestors ?? []).find((a) => a.rank === "family") ?? null;
+  return {
+    commonName: detail.preferred_common_name ?? null,
+    familyLatin: family?.name ?? null,
+    familyCommon: family?.preferred_common_name ?? null,
+    iconicTaxonId: detail.iconic_taxon_id ?? null,
+  };
 }
 
 export async function resolveTaxon(name: string): Promise<ResolvedTaxon | null> {
@@ -99,6 +132,7 @@ export async function resolveTaxon(name: string): Promise<ResolvedTaxon | null> 
         familyLatin: family?.name ?? null,
         familyCommon: family?.preferred_common_name ?? null,
         native: "unknown", // iNat's conservation status is place-specific; the curator edits this by hand
+        iconicTaxonId: detail?.iconic_taxon_id ?? undefined,
       };
     }
   }

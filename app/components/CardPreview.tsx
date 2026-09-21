@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PhotoSlot, SpeciesEntry } from "~/lib/types";
-import { creditText, slotsFor, rectStyle, CARD_W, CARD_H } from "~/lib/cardGeometry";
+import { creditText, slotsFor, rectStyle, focusStyle, CARD_W, CARD_H } from "~/lib/cardGeometry";
 
 /**
  * Live previews of the exported card. Photo blobs come from a resolver
@@ -9,7 +9,7 @@ import { creditText, slotsFor, rectStyle, CARD_W, CARD_H } from "~/lib/cardGeome
 
 export type BlobResolver = (fileKey: string) => Promise<Blob | undefined>;
 
-function PhotoImage({ fileKey, resolve, alt }: { fileKey: string; resolve: BlobResolver; alt?: string }) {
+function PhotoImage({ fileKey, resolve, alt, focus }: { fileKey: string; resolve: BlobResolver; alt?: string; focus?: { x: number; y: number } }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -27,7 +27,7 @@ function PhotoImage({ fileKey, resolve, alt }: { fileKey: string; resolve: BlobR
     };
   }, [fileKey, resolve]);
   if (!src) return null;
-  return <img src={src} alt={alt ?? ""} loading="lazy" />;
+  return <img src={src} alt={alt ?? ""} loading="lazy" style={focusStyle(focus)} />;
 }
 
 /** Card front: photos in the layout slots with credit lines beneath. */
@@ -50,7 +50,7 @@ export function CardFront({
         return (
           <div key={slot.id + index}>
             <div className="slot" style={rectStyle(rect)}>
-              <PhotoImage fileKey={slot.fileKey} resolve={resolve} alt={slot.alt} />
+              <PhotoImage fileKey={slot.fileKey} resolve={resolve} alt={slot.alt} focus={slot.focus} />
             </div>
             <div
               className="credit"
