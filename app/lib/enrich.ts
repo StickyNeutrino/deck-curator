@@ -1,7 +1,7 @@
 import type { Project, SpeciesEntry } from "./types";
 import { resolveTaxon, fetchTaxonDetail } from "./resolve";
 import { categoryIdForIconic, labelForCategoryId } from "./categories";
-import { inatGet } from "./inat";
+import { fetchIconicTaxa } from "./taxaBatch";
 
 /**
  * "Fill gaps from iNaturalist": resolve species that are missing scientific
@@ -96,20 +96,7 @@ export async function enrichProject(
   // Phase 3: iconic-taxon classification for everything auto-sortable, in
   // batches of 50 (one cached request per batch).
   const sortables = all.filter((s) => s.taxonId != null && isAutoSortable(s));
-  const iconic = new Map<number, number | null>();
-  for (let i = 0; i < sortables.length; i += 50) {
-    const chunk = sortables.slice(i, i + 50);
-    try {
-      const json = await inatGet<{ results: Array<{ id: number; iconic_taxon_id?: number }> }>(
-        `taxa/${chunk.map((s) => s.taxonId).join(",")}`,
-      );
-      for (const t of json.results) {
-        iconic.set(t.id, t.iconic_taxon_id ?? null);
-      }
-    } catch {
-      // Leave this batch unclassified.
-    }
-  }
+  const iconic = await fetchIconicTaxa(sortables.map((s) => s.taxonId!));
   let sorted = 0;
   for (const s of sortables) {
     const icon = iconic.get(s.taxonId!);

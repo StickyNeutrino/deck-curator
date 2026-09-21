@@ -1,5 +1,5 @@
 import type { Project } from "./types";
-import { inatGet } from "./inat";
+import { fetchIconicTaxa } from "./taxaBatch";
 
 /**
  * Category helpers for intelligent population: iNat's iconic_taxon_id files a
@@ -91,20 +91,7 @@ export async function resortByTaxonomy(project: Project): Promise<Project> {
   );
   if (sortables.length === 0) return next;
 
-  const iconic = new Map<number, number | null>();
-  for (let i = 0; i < sortables.length; i += 50) {
-    const chunk = sortables.slice(i, i + 50);
-    try {
-      const json = await inatGet<{ results: Array<{ id: number; iconic_taxon_id?: number }> }>(
-        `taxa/${chunk.map((s) => s.taxonId).join(",")}`,
-      );
-      for (const t of json.results) {
-        iconic.set(t.id, t.iconic_taxon_id ?? null);
-      }
-    } catch {
-      // Leave this batch unclassified; a later run finishes it.
-    }
-  }
+  const iconic = await fetchIconicTaxa(sortables.map((s) => s.taxonId!));
   for (const s of sortables) {
     const icon = iconic.get(s.taxonId!);
     if (icon === undefined) continue;
