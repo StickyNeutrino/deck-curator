@@ -15,6 +15,11 @@ export default defineConfig({
     },
   },
   publicDir: "public",
+  optimizeDeps: {
+    // Pre-bundle the lazily imported heavy deps so dev doesn't 504 on first
+    // dynamic import (outdated-dep reload churn).
+    include: ["leaflet", "isomorphic-git", "@isomorphic-git/lightning-fs"],
+  },
   test: {
     globals: true,
     environment: "jsdom",

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Project } from "~/lib/types";
+import { resortByTaxonomy } from "~/lib/categories";
 
 /**
  * Category management: rename, add, and remove categories; removal reassigns
@@ -18,6 +19,7 @@ export function CategoriesManager({
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [resorting, setResorting] = useState(false);
 
   const addCategory = () => {
     const label = newLabel.trim();
@@ -57,15 +59,34 @@ export function CategoriesManager({
         <select
           className="field !w-auto !py-0.5 !px-2 text-xs inline-block"
           value={project.granularity ?? "standard"}
-          onChange={(e) => onChange((d) => {
-            d.granularity = e.target.value as "standard" | "fine";
-          })}
+          onChange={(e) => {
+            const granularity = e.target.value as "standard" | "fine";
+            // Re-file immediately: switching the granularity should visibly
+            // move species into the new groups, not wait for the next
+            // enrichment run.
+            void (async () => {
+              setResorting(true);
+              try {
+                const sorted = await resortByTaxonomy({ ...project, granularity });
+                onChange((d) => {
+                  d.granularity = granularity;
+                  d.categories = sorted.categories;
+                  d.species = sorted.species;
+                });
+              } finally {
+                setResorting(false);
+              }
+            })();
+          }}
+          disabled={resorting}
           data-testid="granularity-select"
         >
           <option value="standard">standard — Plants / Fungi / Animals</option>
           <option value="fine">fine — Birds, Mammals, Insects, …</option>
         </select>
-        <span style={{ color: "var(--muted)" }}>(“Fill gaps from iNaturalist” re-files species)</span>
+        {resorting ? <span style={{ color: "var(--muted)" }}>re-sorting…</span> : (
+          <span style={{ color: "var(--muted)" }}>(species move into the new groups right away)</span>
+        )}
       </label>
       <ul className="flex flex-wrap items-center gap-2">
         {project.categories.map((c) => {

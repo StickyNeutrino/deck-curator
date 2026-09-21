@@ -1,11 +1,12 @@
 import type { Route } from "./+types/export";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useParams } from "react-router";
 import { getProject, saveProject } from "~/lib/store";
 import type { Project } from "~/lib/types";
 import { exportDeck } from "~/lib/export";
 import { validateProject, type ExportIssue } from "~/lib/validate";
 import { listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
  * Pre-export review: deck identity, a validation report (names, photos,
@@ -40,12 +41,8 @@ export default function ExportPage() {
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
-      <nav className="mb-6 text-sm">
-        <Link to={`/project/${projectId}`} className="underline" style={{ color: "var(--muted)" }}>
-          ← {project.deckLabel}
-        </Link>
-      </nav>
-      <h1 className="text-2xl font-bold mb-2">Export deck</h1>
+      <ProjectTabs projectId={projectId ?? ""} active="export" />
+      <h1 className="text-2xl font-bold mt-6 mb-2">Export deck</h1>
       <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>
         Produces a zip with manifest.json plus the photo files. Upload it in the flashcards app's
         menu to study it.

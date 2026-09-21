@@ -27,7 +27,13 @@ test("create → edit → export a deck", async ({ page }) => {
   await page.getByTestId("new-deck-description").fill("E2E description");
   await page.getByTestId("create-deck").click();
   await page.waitForURL(/\/project\/e2e-canyon/);
+  // Name/description editing lives on the Deck info tab.
+  await page.getByTestId("tab-info").click();
+  await page.waitForURL(/\/info/);
   await expect(page.getByTestId("deck-label")).toHaveValue("E2E Canyon");
+  await expect(page.locator('[aria-label="Deck description"]')).toHaveValue("E2E description");
+  await page.getByTestId("tab-cards").click();
+  await page.waitForURL(/\/project\/e2e-canyon$/);
 
   // Add species via the list tab.
   await page.getByTestId("add-species").click();
@@ -37,9 +43,8 @@ test("create → edit → export a deck", async ({ page }) => {
   await expect(page.getByTestId("list-status")).toContainText(/Added 2 species/);
   await page.getByRole("button", { name: "Close" }).click();
 
-  // Rows are visible; the description captured at creation shows on the header.
+  // Rows are visible.
   await expect(page.getByTestId("species-row")).toHaveCount(2);
-  await expect(page.locator('[aria-label="Deck description"]')).toHaveValue("E2E description");
 
   // Open the first species, set the invasive border, save.
   await page.getByRole("button", { name: /Quercus/ }).first().click();
@@ -70,7 +75,7 @@ test("review screen: flag cards, filter, and jump to edit", async ({ page }) => 
   await page.getByRole("button", { name: "Close" }).click();
   await expect(page.getByTestId("species-row")).toHaveCount(2);
 
-  await page.getByTestId("go-review").click();
+  await page.getByTestId("tab-review").click();
   await page.waitForURL(/\/review/);
   await expect(page.getByTestId("review-grid")).toBeVisible();
 
@@ -103,13 +108,64 @@ test("location picker sets the deck location and the iNat scope", async ({ page 
   await page.getByTestId("create-deck").click();
   await page.waitForURL(/\/project\/geo-deck/);
 
+  await page.getByTestId("tab-info").click();
+  await page.waitForURL(/\/info/);
   await page.getByTestId("location-search").fill("Mission Trails");
   await page.getByTestId("location-results").getByRole("button").first().click();
   await expect(page.getByTestId("location-status")).toContainText("Mission Trails");
 
   // The deck's own location is exported into the manifest.
-  await page.getByTestId("go-export").click();
+  await page.getByTestId("tab-export").click();
   const download = page.waitForEvent("download");
   await page.getByTestId("export-deck").click();
   expect((await download).suggestedFilename()).toMatch(/geo-deck.*\.zip$/);
+});
+
+test("version history: auto-commits once per change and lists versions", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/");
+  await page.getByRole("button", { name: "New deck" }).click();
+  await page.getByTestId("new-deck-name").fill("VC Check");
+  await page.getByTestId("create-deck").click();
+  await page.waitForURL(/\/project\/vc-check/);
+
+  // The initial commit lands on open (ensureRepo), shortly after load.
+  await page.goto("/project/vc-check/export");
+  await page.waitForFunction(() => {
+    const section = document.querySelector('[data-testid="version-history"]');
+    return section && section.querySelectorAll("li").length >= 1;
+  }, undefined, { timeout: 20000 });
+  const initialCount = await page.evaluate(
+    () => document.querySelectorAll('[data-testid="version-history"] li').length,
+  );
+
+  // One edit → exactly one more commit after the debounce settles (not a
+  // commit per keystroke, and nothing extra while idle).
+  await page.getByTestId("tab-cards").click();
+  await page.getByTestId("add-species").click();
+  await page.getByTestId("name-list").fill("Quercus agrifolia");
+  await page.getByRole("checkbox", { name: /look up on inaturalist/i }).uncheck();
+  await page.getByTestId("add-list").click();
+  await page.getByRole("button", { name: "Close" }).click();
+  await page.waitForTimeout(15000);
+
+  await page.goto("/project/vc-check/export");
+  await page.waitForFunction((before: number) => {
+    const section = document.querySelector('[data-testid="version-history"]');
+    return section && section.querySelectorAll("li").length > before;
+  }, initialCount, { timeout: 20000 });
+  const afterEdit = await page.evaluate(
+    () => document.querySelectorAll('[data-testid="version-history"] li').length,
+  );
+  // Exactly one commit for the change set.
+  expect(afterEdit).toBe(initialCount + 1);
+
+  // Idle beyond the debounce → no further commits.
+  await page.waitForTimeout(13000);
+  await page.goto("/project/vc-check/export");
+  await page.waitForTimeout(2000);
+  const afterIdle = await page.evaluate(
+    () => document.querySelectorAll('[data-testid="version-history"] li').length,
+  );
+  expect(afterIdle).toBe(afterEdit);
 });

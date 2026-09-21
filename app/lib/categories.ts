@@ -1,4 +1,5 @@
 import type { Project } from "./types";
+import { inatGet } from "./inat";
 
 /**
  * Category helpers for intelligent population: iNat's iconic_taxon_id files a
@@ -77,6 +78,43 @@ export function categoryIdForIconic(
   }
   const label = categoryLabelForIconic(iconicTaxonId);
   return categoryByLabel(project, label) ?? label.toLowerCase();
+}
+
+/** Re-file every auto-managed species into the project's current granularity
+ *  ("Plants/Animals/Fungi" ↔ "Birds/Mammals/…"). Fetches the iconic taxa in
+ *  cached batches and creates any standard categories that appear. Used when
+ *  the user flips the granularity setting. */
+export async function resortByTaxonomy(project: Project): Promise<Project> {
+  const next = structuredClone(project);
+  const sortables = next.species.filter(
+    (s) => s.taxonId != null && isAutoManagedCategory(s.category),
+  );
+  if (sortables.length === 0) return next;
+
+  const iconic = new Map<number, number | null>();
+  for (let i = 0; i < sortables.length; i += 50) {
+    const chunk = sortables.slice(i, i + 50);
+    try {
+      const json = await inatGet<{ results: Array<{ id: number; iconic_taxon_id?: number }> }>(
+        `taxa/${chunk.map((s) => s.taxonId).join(",")}`,
+      );
+      for (const t of json.results) {
+        iconic.set(t.id, t.iconic_taxon_id ?? null);
+      }
+    } catch {
+      // Leave this batch unclassified; a later run finishes it.
+    }
+  }
+  for (const s of sortables) {
+    const icon = iconic.get(s.taxonId!);
+    if (icon === undefined) continue;
+    const id = categoryIdForIconic(next, icon);
+    if (!next.categories.some((c) => c.id === id)) {
+      next.categories.push({ id, label: labelForCategoryId(id) });
+    }
+    s.category = id;
+  }
+  return next;
 }
 
 /** Find-or-create a category by id on a draft project (mutating). */

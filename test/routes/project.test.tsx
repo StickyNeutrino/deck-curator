@@ -30,11 +30,13 @@ describe("project route", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the deck header and empty species table", async () => {
+  it("renders the species table (metadata lives on the Deck info tab)", async () => {
     const project = await makeFixtureProject();
     renderProject(project.id);
-    expect(await screen.findByTestId("deck-label")).toHaveValue("Editor Test");
     await screen.findByTestId("empty-species");
+    expect(screen.getByTestId("project-tabs")).toBeInTheDocument();
+    // The name/description editor moved to the Deck info tab.
+    expect(screen.queryByTestId("deck-label")).not.toBeInTheDocument();
   });
 
   it("adds species from the typed-list tab (no iNat)", async () => {

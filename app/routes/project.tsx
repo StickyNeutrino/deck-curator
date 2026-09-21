@@ -3,14 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { getProject, saveProject } from "~/lib/store";
 import { AddSpeciesModal } from "~/components/AddSpeciesModal";
-import { CategoriesManager } from "~/components/CategoriesManager";
 import { EnrichButton } from "~/components/EnrichButton";
+import { ProjectTabs } from "~/components/ProjectTabs";
 import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "~/lib/types";
 import { serializeProjectFile, parseProjectFile } from "~/lib/projectFile";
 import { makeId } from "~/lib/ids";
 import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
-import { LocationPicker } from "~/components/LocationPicker";
-import { TagsManager, allTags } from "~/components/TagsManager";
+import { allTags } from "~/components/TagsManager";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: "Deck Curator — project" }];
@@ -77,23 +76,20 @@ export default function ProjectPage() {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
-      <nav className="mb-6 text-sm">
+      <nav className="mb-4 text-sm">
         <Link to="/" className="underline" style={{ color: "var(--muted)" }}>
           ← All decks
         </Link>
       </nav>
-      <ProjectHeader project={project} onChange={update} />
-      <section className="mb-6" data-testid="deck-location">
-        <span className="label">Deck location — where this deck is relevant (shown with the deck)</span>
-        <div style={{ maxWidth: 520 }}>
-          <LocationPicker
-            value={project.location}
-            onChange={(loc) => update((d) => { d.location = loc; })}
-          />
-        </div>
-      </section>
-      <CategoriesManager project={project} onChange={update} />
-      <TagsManager project={project} onChange={update} />
+      <ProjectTabs projectId={project.id} active="cards" />
+      <p className="mt-4 text-xs" style={{ color: "var(--muted)" }}>
+        Editing <strong>{project.deckLabel}</strong> — deck-wide settings (name, description,
+        location, categories, tags) live in the{" "}
+        <Link to={`/project/${project.id}/info`} className="underline">
+          Deck info
+        </Link>{" "}
+        tab.
+      </p>
       <SpeciesTable
         project={project}
         onAdd={() => setShowAdd(true)}
@@ -109,14 +105,6 @@ export default function ProjectPage() {
         />
       )}
       <div className="mt-8 flex flex-wrap gap-2 border-t pt-6" style={{ borderColor: "var(--border)" }}>
-        <button
-          className="btn-secondary"
-          data-testid="go-review"
-          onClick={() => navigate(`/project/${project.id}/review`)}
-          title="See every card laid out — front and back — to spot issues"
-        >
-          Review deck…
-        </button>
         <EnrichButton project={project} onChange={update} />
         <button
           className="btn-primary"
@@ -189,33 +177,6 @@ export function LoadProjectButton({ onLoaded }: { onLoaded: (p: Project) => void
   );
 }
 
-function ProjectHeader({ project, onChange }: { project: Project; onChange: (f: (d: Project) => void) => void }) {
-  return (
-    <header className="mb-6">
-      <label className="block mb-3">
-        <span className="label">Deck name — shown in the flashcards app menu</span>
-        <input
-          className="field text-lg font-semibold"
-          value={project.deckLabel}
-          aria-label="Deck label"
-          data-testid="deck-label"
-          onChange={(e) => onChange((d) => { d.deckLabel = e.target.value; })}
-        />
-      </label>
-      <label className="block">
-        <span className="label">Description — shown on the credits page</span>
-        <textarea
-          className="field text-sm"
-          rows={2}
-          placeholder="What does this deck cover?"
-          value={project.description}
-          aria-label="Deck description"
-          onChange={(e) => onChange((d) => { d.description = e.target.value; })}
-        />
-      </label>
-    </header>
-  );
-}
 
 function SpeciesTable({
   project,

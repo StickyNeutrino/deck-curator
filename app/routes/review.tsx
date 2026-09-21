@@ -5,6 +5,7 @@ import { getProject, listFiles, saveProject } from "~/lib/store";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { allTags } from "~/components/TagsManager";
+import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
  * Whole-deck review: every card laid out front and back in one long grid so
@@ -74,12 +75,8 @@ export default function ReviewPage() {
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8">
-      <nav className="mb-6 text-sm">
-        <Link to={`/project/${projectId}`} className="underline" style={{ color: "var(--muted)" }}>
-          ← {project?.deckLabel ?? "…"}
-        </Link>
-      </nav>
-      <header className="mb-6">
+      <ProjectTabs projectId={projectId ?? ""} active="review" />
+      <header className="mt-6 mb-6">
         <h1 className="text-2xl font-bold">{project?.deckLabel ?? "Loading…"}</h1>
         <p className="text-sm mt-1" style={{ color: "var(--muted)" }} data-testid="review-summary">
           {totalCount} cards — front above, back below. Click a card to edit it; flag

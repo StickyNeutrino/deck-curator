@@ -2,6 +2,7 @@ import type { Project } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
 import { getFile, putFile, deleteFile } from "./store";
+import "./polyfills";
 
 /**
  * Automatic git versioning for curation projects.
@@ -51,19 +52,31 @@ function fingerprint(project: Project): string {
 
 const lastFingerprints = new Map<string, string>();
 
-/** Create the repo (with an initial commit) if it doesn't exist yet. */
+/** Create the repo (with an initial commit) if it doesn't exist yet — or if
+ *  it exists but was created before any commit ever landed (older sessions
+ *  could init a bare repo that never gained history). */
 export async function ensureRepo(project: Project, files?: Map<string, Blob>): Promise<void> {
   const fs = await getFs();
   const git = await getGit();
   const dir = dirFor(project.id);
+  let hasRepo = false;
   try {
     await fs.promises.stat(`${dir}/.git`);
-    return;
+    hasRepo = true;
   } catch {
     // No repo yet — fall through to init.
   }
-  await git.init({ fs, dir });
-  await commitAll(project, files, `Created deck “${project.name}”`, { force: true });
+  if (!hasRepo) {
+    await git.init({ fs, dir });
+  }
+  try {
+    const versions = await listVersions(project.id, 1);
+    if (versions.length === 0) {
+      await commitAll(project, files, `Created deck “${project.name}”`, { force: true });
+    }
+  } catch {
+    // History unreadable — autosave will retry on the next change.
+  }
 }
 
 /** Commit the current project state. `files` are photo blobs if already at
@@ -158,6 +171,10 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
       timestamp: entry.commit.author.timestamp * 1000,
     }));
   } catch (err) {
+    // A repo with no commits yet is normal (fresh init, first commit in
+    // flight) — stay quiet; real failures still warn.
+    const name = String((err as { name?: string })?.name ?? "");
+    if (name === "NotFoundError" || name === "RepositoryNotFoundError") return [];
     console.warn("Version history unavailable:", err);
     return [];
   }
