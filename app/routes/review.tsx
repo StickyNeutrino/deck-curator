@@ -51,15 +51,10 @@ export default function ReviewPage() {
     [],
   );
 
-  if (!project) {
-    return (
-      <main className="mx-auto max-w-6xl px-4 py-10">
-        <p>Loading…</p>
-      </main>
-    );
-  }
-
+  // All hooks run on every render — the early return below must not change
+  // the hook count (that crashed the page whenever the project loaded late).
   const grouped = useMemo(() => {
+    if (!project) return [];
     const matches = (s: SpeciesEntry): boolean => {
       if (filter === "flagged") return Boolean(s.needsReview);
       if (filter === "tag") return (s.tags ?? []).includes(tagFilter);
@@ -73,20 +68,21 @@ export default function ReviewPage() {
       .filter((group) => group.species.length > 0);
   }, [project, filter, tagFilter]);
 
-  const flaggedCount = project.species.filter((s) => s.needsReview).length;
-  const tags = useMemo(() => allTags(project), [project]);
+  const flaggedCount = project?.species.filter((s) => s.needsReview).length ?? 0;
+  const totalCount = project?.species.length ?? 0;
+  const tags = useMemo(() => (project ? allTags(project) : []), [project]);
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8">
       <nav className="mb-6 text-sm">
         <Link to={`/project/${projectId}`} className="underline" style={{ color: "var(--muted)" }}>
-          ← {project.deckLabel}
+          ← {project?.deckLabel ?? "…"}
         </Link>
       </nav>
       <header className="mb-6">
-        <h1 className="text-2xl font-bold">{project.deckLabel}</h1>
+        <h1 className="text-2xl font-bold">{project?.deckLabel ?? "Loading…"}</h1>
         <p className="text-sm mt-1" style={{ color: "var(--muted)" }} data-testid="review-summary">
-          {project.species.length} cards — front above, back below. Click a card to edit it; flag
+          {totalCount} cards — front above, back below. Click a card to edit it; flag
           cards that need another pass with the ⚑ button.
         </p>
         <div className="flex flex-wrap items-center gap-2 mt-3" data-testid="review-filters">
@@ -95,7 +91,7 @@ export default function ReviewPage() {
             onClick={() => setFilter("all")}
             data-testid="filter-all"
           >
-            All ({project.species.length})
+            All ({totalCount})
           </button>
           <button
             className={`btn text-sm ${filter === "flagged" ? "btn-primary" : "btn-secondary"}`}
@@ -175,12 +171,12 @@ export default function ReviewPage() {
           </div>
         </section>
       ))}
-      {project.species.length === 0 && (
+      {project != null && project.species.length === 0 && (
         <p className="text-sm" style={{ color: "var(--muted)" }}>
           This deck has no species yet.
         </p>
       )}
-      {project.species.length > 0 && grouped.length === 0 && (
+      {project != null && project.species.length > 0 && grouped.length === 0 && (
         <p className="text-sm" style={{ color: "var(--muted)" }} data-testid="review-empty-filter">
           Nothing matches this filter.
         </p>
