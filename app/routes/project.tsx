@@ -9,6 +9,8 @@ import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "
 import { serializeProjectFile, parseProjectFile } from "~/lib/projectFile";
 import { makeId } from "~/lib/ids";
 import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
+import { LocationPicker } from "~/components/LocationPicker";
+import { TagsManager, allTags } from "~/components/TagsManager";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: "Deck Curator — project" }];
@@ -81,7 +83,17 @@ export default function ProjectPage() {
         </Link>
       </nav>
       <ProjectHeader project={project} onChange={update} />
+      <section className="mb-6" data-testid="deck-location">
+        <span className="label">Deck location — where this deck is relevant (shown with the deck)</span>
+        <div style={{ maxWidth: 520 }}>
+          <LocationPicker
+            value={project.location}
+            onChange={(loc) => update((d) => { d.location = loc; })}
+          />
+        </div>
+      </section>
       <CategoriesManager project={project} onChange={update} />
+      <TagsManager project={project} onChange={update} />
       <SpeciesTable
         project={project}
         onAdd={() => setShowAdd(true)}
@@ -219,15 +231,21 @@ function SpeciesTable({
   onDownloadTemplate: () => void;
 }) {
   const [filter, setFilter] = useState("");
+  const [tagFilter, setTagFilter] = useState<string>("all");
   const catLabel = useMemo(() => {
     const m = new Map(project.categories.map((c) => [c.id, c.label]));
     return (id: string) => m.get(id) ?? id;
   }, [project.categories]);
+  const tags = useMemo(() => allTags(project), [project]);
 
-  const visible = project.species.filter((s) =>
-    !filter ||
-    s.commonName.toLowerCase().includes(filter.toLowerCase()) ||
-    s.sciName.toLowerCase().includes(filter.toLowerCase()));
+  const visible = project.species.filter((s) => {
+    const nameMatch =
+      !filter ||
+      s.commonName.toLowerCase().includes(filter.toLowerCase()) ||
+      s.sciName.toLowerCase().includes(filter.toLowerCase());
+    const tagMatch = tagFilter === "all" || (s.tags ?? []).includes(tagFilter);
+    return nameMatch && tagMatch;
+  });
 
   return (
     <section>
@@ -243,8 +261,22 @@ function SpeciesTable({
           onChange={(e) => setFilter(e.target.value)}
           aria-label="Filter species"
         />
+        <select
+          className="field !w-auto text-xs"
+          value={tagFilter}
+          onChange={(e) => setTagFilter(e.target.value)}
+          aria-label="Filter by tag"
+          data-testid="tag-filter"
+        >
+          <option value="all">All tags</option>
+          {tags.map(({ tag, count }) => (
+            <option key={tag} value={tag}>
+              {tag} ({count})
+            </option>
+          ))}
+        </select>
         <span className="text-xs ml-auto" style={{ color: "var(--muted)" }}>
-          {project.species.length} species
+          {visible.length}/{project.species.length} species
         </span>
       </div>
       <div className="overflow-x-auto rounded-lg border bg-white" style={{ borderColor: "var(--border)" }}>
@@ -256,6 +288,8 @@ function SpeciesTable({
               <th className="px-3 py-2">Scientific name</th>
               <th className="px-3 py-2">Category</th>
               <th className="px-3 py-2">Status</th>
+              <th className="px-3 py-2">Border</th>
+              <th className="px-3 py-2">Tags</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
@@ -286,8 +320,10 @@ function SpeciesTable({
                     <option value="native">Native</option>
                     <option value="non-native">Non-native</option>
                   </select>
+                </td>
+                <td className="px-3 py-2">
                   <select
-                    className="field !py-1 !px-2 !w-auto text-xs mt-1"
+                    className="field !py-1 !px-2 !w-auto text-xs"
                     value={s.border}
                     onChange={(e) => onChange((d) => {
                       const target = d.species.find((x) => x.id === s.id);
@@ -303,6 +339,15 @@ function SpeciesTable({
                       </option>
                     ))}
                   </select>
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex flex-wrap gap-1">
+                    {(s.tags ?? []).map((tag) => (
+                      <span key={tag} className="text-xs rounded-full border px-2 py-0.5" style={{ borderColor: "var(--border)" }} data-testid={`row-tag-${tag}`}>
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
                 </td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   <button
@@ -331,7 +376,7 @@ function SpeciesTable({
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center" style={{ color: "var(--muted)" }}>
+                <td colSpan={8} className="px-3 py-8 text-center" style={{ color: "var(--muted)" }}>
                   {project.species.length === 0 ? (
                     <span data-testid="empty-species">
                       No species yet —{" "}

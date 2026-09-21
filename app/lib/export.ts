@@ -33,6 +33,15 @@ export function buildManifest(project: Project): object {
     id: project.id,
     label: project.deckLabel,
     description: project.description,
+    // Where this deck is relevant (name and/or coordinates).
+    location: project.location
+      ? {
+          name: project.location.name || undefined,
+          lat: project.location.lat,
+          lng: project.location.lng,
+          radiusKm: project.location.radiusKm,
+        }
+      : undefined,
     cardFormat: "data",
     generator: { tool: "deck-curator", version: "1.0.0", exportedAt: new Date().toISOString() },
     categories,
@@ -85,6 +94,7 @@ export function cardFromSpecies(s: SpeciesEntry, exportName?: string): object {
     // for backwards compatibility; other styles ride on `border`.
     invasive: s.border === "invasive" || undefined,
     border: s.border && s.border !== "none" && s.border !== "invasive" ? s.border : undefined,
+    tags: s.tags && s.tags.length > 0 ? s.tags : undefined,
     rarity: s.rarity || null,
     taxonId: s.taxonId,
     credits: s.photos.map((p) => creditFromSlot(p)),

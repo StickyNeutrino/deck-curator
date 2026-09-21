@@ -51,7 +51,22 @@ export function CategoriesManager({
 
   return (
     <section className="mb-6" data-testid="categories-manager">
-      <span className="label">Categories (study modes in the flashcards app)</span>
+      <span className="label">Categories — taxonomy study modes (auto-filed from iNaturalist)</span>
+      <label className="text-xs inline-flex items-center gap-2 mb-2 ml-2">
+        Auto-categorization{" "}
+        <select
+          className="field !w-auto !py-0.5 !px-2 text-xs inline-block"
+          value={project.granularity ?? "standard"}
+          onChange={(e) => onChange((d) => {
+            d.granularity = e.target.value as "standard" | "fine";
+          })}
+          data-testid="granularity-select"
+        >
+          <option value="standard">standard — Plants / Fungi / Animals</option>
+          <option value="fine">fine — Birds, Mammals, Insects, …</option>
+        </select>
+        <span style={{ color: "var(--muted)" }}>(“Fill gaps from iNaturalist” re-files species)</span>
+      </label>
       <ul className="flex flex-wrap items-center gap-2">
         {project.categories.map((c) => {
           const count = project.species.filter((s) => s.category === c.id).length;

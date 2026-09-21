@@ -1,9 +1,10 @@
 import type { Route } from "./+types/review";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
-import { getProject, listFiles } from "~/lib/store";
-import type { Project } from "~/lib/types";
+import { Link, useNavigate, useParams } from "react-router";
+import { getProject, listFiles, saveProject } from "~/lib/store";
+import type { Project, SpeciesEntry } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
+import { allTags } from "~/components/TagsManager";
 
 /**
  * Whole-deck review: every card laid out front and back in one long grid so
@@ -17,8 +18,11 @@ export function meta({}: Route.MetaArgs) {
 
 export default function ReviewPage() {
   const { projectId } = useParams();
+  const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [blobMap, setBlobMap] = useState<Map<string, Blob>>(new Map());
+  const [filter, setFilter] = useState<"all" | "flagged" | "tag">("all");
+  const [tagFilter, setTagFilter] = useState<string>("");
 
   useEffect(() => {
     if (!projectId) return;
@@ -31,6 +35,22 @@ export default function ReviewPage() {
     [blobMap],
   );
 
+  // Toggle the curator-only "needs review" flag; autosaves like any edit.
+  const toggleFlag = useCallback(
+    (speciesId: string) => {
+      setProject((current) => {
+        if (!current) return current;
+        const next = structuredClone(current);
+        const target = next.species.find((s) => s.id === speciesId);
+        if (!target) return current;
+        target.needsReview = !target.needsReview;
+        void saveProject(next);
+        return next;
+      });
+    },
+    [],
+  );
+
   if (!project) {
     return (
       <main className="mx-auto max-w-6xl px-4 py-10">
@@ -39,12 +59,22 @@ export default function ReviewPage() {
     );
   }
 
-  const grouped = project.categories
-    .map((category) => ({
-      category,
-      species: project.species.filter((s) => s.category === category.id),
-    }))
-    .filter((group) => group.species.length > 0);
+  const grouped = useMemo(() => {
+    const matches = (s: SpeciesEntry): boolean => {
+      if (filter === "flagged") return Boolean(s.needsReview);
+      if (filter === "tag") return (s.tags ?? []).includes(tagFilter);
+      return true;
+    };
+    return project.categories
+      .map((category) => ({
+        category,
+        species: project.species.filter((s) => s.category === category.id && matches(s)),
+      }))
+      .filter((group) => group.species.length > 0);
+  }, [project, filter, tagFilter]);
+
+  const flaggedCount = project.species.filter((s) => s.needsReview).length;
+  const tags = useMemo(() => allTags(project), [project]);
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8">
@@ -53,12 +83,47 @@ export default function ReviewPage() {
           ← {project.deckLabel}
         </Link>
       </nav>
-      <header className="mb-8">
+      <header className="mb-6">
         <h1 className="text-2xl font-bold">{project.deckLabel}</h1>
         <p className="text-sm mt-1" style={{ color: "var(--muted)" }} data-testid="review-summary">
-          {project.species.length} cards · {blobMap.size} photo file{blobMap.size === 1 ? "" : "s"} —
-          front above, back below. Scan for typos, missing photos, and bad crops.
+          {project.species.length} cards — front above, back below. Click a card to edit it; flag
+          cards that need another pass with the ⚑ button.
         </p>
+        <div className="flex flex-wrap items-center gap-2 mt-3" data-testid="review-filters">
+          <button
+            className={`btn text-sm ${filter === "all" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setFilter("all")}
+            data-testid="filter-all"
+          >
+            All ({project.species.length})
+          </button>
+          <button
+            className={`btn text-sm ${filter === "flagged" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setFilter("flagged")}
+            data-testid="filter-flagged"
+          >
+            ⚑ Needs review ({flaggedCount})
+          </button>
+          {tags.length > 0 && (
+            <select
+              className="field !w-auto text-xs"
+              value={filter === "tag" ? tagFilter : ""}
+              onChange={(e) => {
+                setTagFilter(e.target.value);
+                setFilter(e.target.value ? "tag" : "all");
+              }}
+              aria-label="Filter by tag"
+              data-testid="review-tag-filter"
+            >
+              <option value="">Filter by tag…</option>
+              {tags.map(({ tag, count }) => (
+                <option key={tag} value={tag}>
+                  {tag} ({count})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
       </header>
 
       {grouped.map(({ category, species }) => (
@@ -70,11 +135,40 @@ export default function ReviewPage() {
             data-testid="review-grid"
           >
             {species.map((s) => (
-              <figure key={s.id} data-testid={`review-card-${s.id}`} className="space-y-3">
-                <CardFront species={s} resolve={resolve} />
-                <CardBack species={s} />
+              <figure key={s.id} data-testid={`review-card-${s.id}`} className="space-y-2">
+                <div className="relative">
+                  <button
+                    className="absolute top-2 right-2 z-10 rounded-full bg-white/90 border px-2 py-1 text-xs cursor-pointer shadow"
+                    style={{
+                      borderColor: s.needsReview ? "var(--accent)" : "var(--border)",
+                      color: s.needsReview ? "var(--accent)" : "var(--muted)",
+                      fontWeight: s.needsReview ? 700 : 400,
+                    }}
+                    onClick={() => toggleFlag(s.id)}
+                    title={s.needsReview ? "Unflag: looks good" : "Flag for review"}
+                    data-testid={`flag-${s.id}`}
+                  >
+                    ⚑
+                  </button>
+                  <button
+                    className="block w-full text-left cursor-zoom-in"
+                    onClick={() => navigate(`/project/${projectId}/species/${s.id}`)}
+                    title="Edit this card"
+                    data-testid={`edit-card-${s.id}`}
+                  >
+                    <CardFront species={s} resolve={resolve} />
+                    <div className="mt-2">
+                      <CardBack species={s} />
+                    </div>
+                  </button>
+                </div>
                 <figcaption className="text-xs text-center" style={{ color: "var(--muted)" }}>
                   {s.commonName || s.sciName}
+                  {s.needsReview && (
+                    <span className="ml-1 font-semibold" style={{ color: "var(--accent)" }}>
+                      ⚑ needs review
+                    </span>
+                  )}
                 </figcaption>
               </figure>
             ))}
@@ -84,6 +178,11 @@ export default function ReviewPage() {
       {project.species.length === 0 && (
         <p className="text-sm" style={{ color: "var(--muted)" }}>
           This deck has no species yet.
+        </p>
+      )}
+      {project.species.length > 0 && grouped.length === 0 && (
+        <p className="text-sm" style={{ color: "var(--muted)" }} data-testid="review-empty-filter">
+          Nothing matches this filter.
         </p>
       )}
     </main>

@@ -6,6 +6,8 @@ import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
 import { inatGet, type InatTaxon } from "~/lib/inat";
 import { slugify } from "~/lib/ids";
 import { putFile } from "~/lib/store";
+import { LocationPicker } from "~/components/LocationPicker";
+import type { DeckLocation } from "~/lib/types";
 
 /** iNat iconic_taxon_id → friendly filter names (ids verified against the
  *  API: 3 Aves, 40151 Mammalia, 26036 Reptilia, 20978 Amphibia, 47178
@@ -64,9 +66,9 @@ export function InatTab({
   project: Project;
   onChange: (f: (d: Project) => void) => void;
 }) {
-  const [lat, setLat] = useState("");
-  const [lng, setLng] = useState("");
-  const [radius, setRadius] = useState("10");
+  // Scope: a geocoded/picked location (initialized from the deck's own
+  // location when it has one) or worldwide when unset.
+  const [loc, setLoc] = useState<DeckLocation | undefined>(project.location);
   const [taxonQuery, setTaxonQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<TaxonResult[]>([]);
@@ -105,7 +107,7 @@ export function InatTab({
   );
 
   const search = useCallback(async () => {
-    if (!taxonQuery.trim() && !(lat && lng)) {
+    if (!taxonQuery.trim() && !(loc?.lat != null && loc?.lng != null)) {
       setError("Enter coordinates (and/or a taxon filter) to search.");
       return;
     }
@@ -124,9 +126,9 @@ export function InatTab({
         const json = await inatGet<{
           results: Array<{ taxon?: InatTaxon; id: number }>;
         }>("observations", {
-          lat: lat && lng ? lat : undefined,
-          lng: lat && lng ? lng : undefined,
-          radius: lat && lng ? radius || "10" : undefined,
+          lat: loc?.lat != null && loc?.lng != null ? loc.lat : undefined,
+          lng: loc?.lat != null && loc?.lng != null ? loc.lng : undefined,
+          radius: loc?.lat != null && loc?.lng != null ? loc.radiusKm || 10 : undefined,
           per_page: 200,
           page,
           photos: true,
@@ -172,7 +174,7 @@ export function InatTab({
     } finally {
       setSearching(false);
     }
-  }, [lat, lng, radius, taxonQuery, resultLimit]);
+  }, [loc, taxonQuery, resultLimit]);
 
   /**
    * Add one search result as a card. When the species is already in the deck
@@ -186,8 +188,8 @@ export function InatTab({
       setBusyName(result.name);
       try {
         const photoScope =
-          lat && lng
-            ? { lat: Number(lat), lng: Number(lng), radiusKm: Number(radius) || 10 }
+          loc?.lat != null && loc?.lng != null
+            ? { lat: loc.lat, lng: loc.lng, radiusKm: loc.radiusKm || 10 }
             : undefined;
         const candidates = await candidatePhotos(result.id, photoScope, opts.exclude);
         const picked = pickDistinct(candidates, photosPerCard);
@@ -258,7 +260,7 @@ export function InatTab({
         setBusyName(null);
       }
     },
-    [lat, lng, radius, photosPerCard, project.id, project.categories, cardsFor, onChange],
+    [loc, photosPerCard, project.id, project.categories, cardsFor, onChange],
   );
 
   /** Add every listed species (cardsPerSpecies cards each, photo-distinct). */
@@ -308,39 +310,24 @@ export function InatTab({
 
   return (
     <div data-testid="inat-tab">
+      <div className="mb-3">
+        <span className="label">Where to search — pick a place, address, or point on the map</span>
+        <LocationPicker
+          value={loc}
+          onChange={(next: DeckLocation | undefined) => {
+            setLoc(next);
+            // The deck's own location follows the search scope when the user
+            // hasn't set one yet — these are almost always the same place.
+            if (next && !project.location) {
+              onChange((d) => {
+                d.location = next;
+              });
+            }
+          }}
+          showRadius
+        />
+      </div>
       <div className="grid grid-cols-2 gap-3 mb-3">
-        <label className="text-sm">
-          <span className="label">Latitude</span>
-          <input
-            className="field"
-            value={lat}
-            onChange={(e) => setLat(e.target.value)}
-            placeholder="32.7157"
-            inputMode="decimal"
-            data-testid="inat-lat"
-          />
-        </label>
-        <label className="text-sm">
-          <span className="label">Longitude</span>
-          <input
-            className="field"
-            value={lng}
-            onChange={(e) => setLng(e.target.value)}
-            placeholder="-117.1611"
-            inputMode="decimal"
-            data-testid="inat-lng"
-          />
-        </label>
-        <label className="text-sm">
-          <span className="label">Radius (km)</span>
-          <input
-            className="field"
-            value={radius}
-            onChange={(e) => setRadius(e.target.value)}
-            inputMode="decimal"
-            data-testid="inat-radius"
-          />
-        </label>
         <label className="text-sm">
           <span className="label">Taxon filter (optional)</span>
           <input

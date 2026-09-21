@@ -9,6 +9,7 @@ import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
 import { uuid } from "~/lib/uuid";
 import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeometry";
 import { BORDER_STYLES, type BorderStyle } from "~/lib/types";
+import { allTags } from "~/components/TagsManager";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { ReplacePicker } from "~/components/ReplacePicker";
 
@@ -93,6 +94,8 @@ export default function SpeciesPage() {
 
           <Fields draft={draft} project={project} onChange={update} />
 
+          <TagsEditor draft={draft} project={project} onChange={update} />
+
           <PhotosEditor
             species={draft}
             projectId={projectId ?? ""}
@@ -147,8 +150,59 @@ export default function SpeciesPage() {
   );
 }
 
-function Shell({ children, backLabel, backTo }: { children: React.ReactNode; backLabel: string; backTo: string }) {
+/** Tag editor: comma-separated input with suggestions from existing tags. */
+function TagsEditor({
+  draft,
+  project,
+  onChange,
+}: {
+  draft: SpeciesEntry;
+  project: Project;
+  onChange: (f: (d: SpeciesEntry) => void) => void;
+}) {
+  const suggestions = allTags(project)
+    .map(({ tag }) => tag)
+    .filter((tag) => !(draft.tags ?? []).includes(tag))
+    .slice(0, 8);
   return (
+    <div className="mb-6" data-testid="tags-editor">
+      <span className="label">Tags — e.g. “phase 1”, “class session 3” (comma separated)</span>
+      <input
+        className="field text-sm"
+        value={(draft.tags ?? []).join(", ")}
+        placeholder="phase 1, quiz group A"
+        aria-label="Tags"
+        data-testid="tags-input"
+        onChange={(e) =>
+          onChange((d) => {
+            d.tags = e.target.value
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean);
+          })
+        }
+      />
+      {suggestions.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1">
+          {suggestions.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className="text-xs rounded-full border px-2 py-0.5 hover:bg-[var(--accent-soft)]"
+              style={{ borderColor: "var(--border)" }}
+              onClick={() => onChange((d) => { d.tags = [...(d.tags ?? []), tag]; })}
+              data-testid={`suggest-tag-${tag}`}
+            >
+              + {tag}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Shell({ children, backLabel, backTo }: { children: React.ReactNode; backLabel: string; backTo: string }) {  return (
     <main className="mx-auto max-w-3xl px-4 py-10">
       <Link to={backTo} className="underline text-sm" style={{ color: "var(--muted)" }}>
         ← {backLabel}

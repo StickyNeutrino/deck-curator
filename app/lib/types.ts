@@ -95,6 +95,11 @@ export interface SpeciesEntry {
   rarity?: string;
   taxonId?: number;
   layout: CardLayout;
+  /** Free-form user tags (phases, classes, units) — exported per card and
+   *  filterable in the curator. */
+  tags: string[];
+  /** Curator-only flag for the review page ("go through these again"). */
+  needsReview?: boolean;
   /** Main photo first, secondaries after. */
   photos: PhotoSlot[];
   notes?: string;
@@ -115,10 +120,23 @@ export interface Project {
   /** Exported deck label (emoji allowed). */
   deckLabel: string;
   description: string;
+  /** Where this deck is relevant — exported into the manifest. */
+  location?: DeckLocation;
+  /** How specific auto-categorization from iNat taxonomy gets:
+   *  "standard" = Plants/Fungi/Animals, "fine" = Birds/Mammals/Insects/…. */
+  granularity?: "standard" | "fine";
   categories: ProjectCategory[];
   species: SpeciesEntry[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** A deck's geographic scope: a name (geocodable) and/or coordinates. */
+export interface DeckLocation {
+  name?: string;
+  lat?: number;
+  lng?: number;
+  radiusKm?: number;
 }
 
 export function makeCategory(id: string, label: string): ProjectCategory {
@@ -139,6 +157,7 @@ export function makeSpecies(partial: Partial<SpeciesEntry> = {}): SpeciesEntry {
     rarity: partial.rarity,
     taxonId: partial.taxonId,
     layout: partial.layout ?? "photo-trio",
+    tags: partial.tags ?? [],
     photos: partial.photos ?? [],
     notes: partial.notes,
     inatResolved: partial.inatResolved,

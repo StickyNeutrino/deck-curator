@@ -21,6 +21,12 @@ can later be committed to the app's `decks/` registry unchanged.
   "id": "my-canyon-deck",              // slug, unique
   "label": "🌿 My Canyon Deck",        // user-facing deck name (emoji allowed)
   "description": "Species of …",
+  "location": {                        // optional — where this deck is relevant
+    "name": "Mission Trails Regional Park",
+    "lat": 32.8282,                    // optional coordinates
+    "lng": -117.0522,
+    "radiusKm": 10                     // optional scope radius
+  },
   "cardFormat": "data",                // marks a data-driven deck (see below)
   "generator": {                       // optional provenance
     "tool": "deck-curator",
@@ -65,6 +71,7 @@ pre-rendered JPGs) — they keep working exactly as before.
   "native": "non-native",              // "native" | "non-native" | "unknown" (optional)
   "invasive": true,                    // optional; legacy red border flag (border: "invasive" implies it)
   "border": "invasive",                // optional colored border: "invasive" | "caution" | "rare" | "notable"
+  "tags": ["phase 1", "class A"],      // optional user tags (phases, classes, units) for filtering
   "rarity": null,                      // optional free text (CNPS/CESA/FESA …)
   "taxonId": 53315,                    // optional iNaturalist taxon id
   "credits": [                         // optional; flattened photo credits for the credits page

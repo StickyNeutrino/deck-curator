@@ -4,6 +4,7 @@ import { buildManifest } from "~/lib/export";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
+import type { Project } from "~/lib/types";
 
 describe("crop windows", () => {
   it("maps a crop rect onto the slot (img sized 1/w × 1/h, offset by the origin)", () => {
@@ -165,5 +166,30 @@ describe("categories", () => {
     expect(labelForCategoryId("plants")).toBe("Plants");
     expect(labelForCategoryId("fungi")).toBe("Fungi");
     expect(labelForCategoryId("animals")).toBe("Animals");
+  });
+});
+
+describe("tags", () => {
+  it("exports tags per card and they survive a manifest round-trip", async () => {
+    const project = newProject("Tagged");
+    const entry = makeSpecies({ commonName: "Oak", category: "plants", tags: ["phase 1", "quiz A"] });
+    entry.photos.push({ id: "u", role: "main", fileKey: "oak.jpg", credit: { observer: "A", license: "cc0" } });
+    project.species.push(entry);
+
+    const manifest = buildManifest(project) as any;
+    expect(manifest.categories[0].cards[0].tags).toEqual(["phase 1", "quiz A"]);
+  });
+});
+
+describe("fine-grained categories", () => {
+  it("files birds separately at fine granularity, into Animals at standard", () => {
+    const standard = newProject("Std");
+    expect(categoryIdForIconic(standard, 3)).toBe("animals");
+    const fine: Project = { ...newProject("Fine"), granularity: "fine" };
+    expect(categoryIdForIconic(fine, 3)).toBe("birds");
+    expect(categoryIdForIconic(fine, 40151)).toBe("mammals");
+    // Existing matching labels still win in both modes.
+    fine.categories.push({ id: "birds", label: "Birds" });
+    expect(categoryIdForIconic(fine, 3)).toBe("birds");
   });
 });

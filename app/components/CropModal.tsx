@@ -67,12 +67,23 @@ export function CropModal({
     };
   }, [projectId, fileKey]);
 
-  // Initialize the crop once the image aspect is known.
+  // Initialize the crop once the image aspect is known; snap any existing
+  // crop to the slot's aspect (only valid — undistorted — crops allowed).
   useEffect(() => {
     if (crop === null && imageAspect !== null) {
-      setCrop(initialCrop ?? defaultCoverCrop(imageAspect, slotAspect));
+      const lock = slotAspect / imageAspect; // crop w/h in normalized space
+      const base = initialCrop ?? defaultCoverCrop(imageAspect, slotAspect);
+      let w = base.w;
+      let h = w / lock;
+      if (h > 1) {
+        h = 1;
+        w = h * lock;
+      }
+      const cx = base.x + base.w / 2;
+      const cy = base.y + base.h / 2;
+      setCrop(clampCrop({ x: cx - w / 2, y: cy - h / 2, w, h }));
     }
-  }, [imageAspect, initialCrop, crop]);
+  }, [imageAspect, initialCrop, crop, slotAspect]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -103,18 +114,26 @@ export function CropModal({
       setCrop(clampCrop({ ...o, x: o.x + dx, y: o.y + dy }));
       return;
     }
-    // Corner resize: the dragged corner moves, the opposite corner stays.
+    // Corner resize, aspect-locked: the dragged edge drives the width; the
+    // height follows from the slot aspect (valid, undistorted crops only),
+    // anchored at the opposite corner and clamped to the image.
+    const lock = slotAspect / (imageAspect ?? 1); // crop w/h in normalized space
     const east = dragRef.current.kind === "ne" || dragRef.current.kind === "se";
     const south = dragRef.current.kind === "se" || dragRef.current.kind === "sw";
-    let x1 = o.x;
-    let y1 = o.y;
-    let x2 = o.x + o.w;
-    let y2 = o.y + o.h;
-    if (east) x2 = Math.min(1, Math.max(0.05, o.x + o.w + dx));
-    else x1 = Math.min(o.x + o.w - 0.05, Math.max(0, o.x + dx));
-    if (south) y2 = Math.min(1, Math.max(0.05, o.y + o.h + dy));
-    else y1 = Math.min(o.y + o.h - 0.05, Math.max(0, o.y + dy));
-    setCrop(clampCrop({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 }));
+    let w = Math.min(1, Math.max(0.05, o.w + (east ? dx : -dx)));
+    let h = w / lock;
+    if (h > 1) {
+      h = 1;
+      w = h * lock;
+    }
+    setCrop(
+      clampCrop({
+        x: east ? o.x : o.x + o.w - w,
+        y: south ? o.y : o.y + o.h - h,
+        w,
+        h,
+      }),
+    );
   };
 
   const endDrag = () => {
@@ -132,8 +151,9 @@ export function CropModal({
       <div className="rounded-lg bg-white p-5 max-w-2xl w-full" role="dialog" aria-label="Crop photo">
         <h2 className="font-semibold mb-1">Crop photo</h2>
         <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-          Drag inside the window to move it; drag a corner to resize. Everything outside the bright
-          area is cropped away.
+          Drag inside the window to move it; drag a corner to resize (the window keeps the card
+          slot's shape, so the photo is never distorted). Everything outside the bright area is
+          cropped away.
         </p>
         {url && crop ? (
           <div

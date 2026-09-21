@@ -95,6 +95,9 @@ button {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.18);
+  /* Text inside scales with the card exactly like the flashcards app
+     (which sizes the whole stack in cqw off the 750px design canvas). */
+  container-type: inline-size;
 }
 
 .preview-card .slot {
@@ -113,7 +116,10 @@ button {
 
 .preview-card .credit {
   position: absolute;
-  font-size: 12px;
+  /* 12px on the 750px design canvas — identical to the app's .data-credit
+     (which inherits 1.6cqw from the card content). Fixed px overflowed and
+     clipped on narrower previews. */
+  font-size: 1.6cqw;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;

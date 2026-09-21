@@ -32,6 +32,7 @@ interface ManifestCard {
   name: string;
   layout?: string;
   photos?: ManifestPhoto[];
+  tags?: string[];
   sciName?: string;
   commonName?: string;
   altNames?: string[];
@@ -44,10 +45,18 @@ interface ManifestCard {
   taxonId?: number;
 }
 
+interface ManifestLocation {
+  name?: string;
+  lat?: number;
+  lng?: number;
+  radiusKm?: number;
+}
+
 interface Manifest {
   id?: string;
   label?: string;
   description?: string;
+  location?: ManifestLocation;
   cardFormat?: string;
   categories?: Array<{ id: string; label: string; cards: ManifestCard[] }>;
 }
@@ -104,6 +113,7 @@ export function speciesFromManifest(manifest: Manifest): {
           rarity: card.rarity ?? undefined,
           taxonId: card.taxonId,
           layout: card.layout === "photo-single" ? "photo-single" : "photo-trio",
+          tags: card.tags ?? [],
           photos,
           inatResolved: card.taxonId != null,
         }),
@@ -143,6 +153,14 @@ export async function importDeckArchive(file: File): Promise<Project> {
     name: manifest.label ?? deckId,
     deckLabel: manifest.label ?? deckId,
     description: manifest.description ?? "",
+    location: manifest.location
+      ? {
+          name: manifest.location.name,
+          lat: manifest.location.lat,
+          lng: manifest.location.lng,
+          radiusKm: manifest.location.radiusKm,
+        }
+      : undefined,
     categories: (manifest.categories ?? []).map((c) => ({ id: c.id, label: c.label })),
     species: [],
     createdAt: now,

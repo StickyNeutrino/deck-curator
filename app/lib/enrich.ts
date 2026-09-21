@@ -1,6 +1,6 @@
 import type { Project, SpeciesEntry } from "./types";
 import { resolveTaxon, fetchTaxonDetail } from "./resolve";
-import { categoryIdForIconic } from "./categories";
+import { categoryIdForIconic, labelForCategoryId } from "./categories";
 import { inatGet } from "./inat";
 
 /**
@@ -21,11 +21,17 @@ export interface EnrichResult {
   unresolved: string[];
 }
 
-const STANDARD_CATEGORIES = new Set(["plants", "fungi", "animals"]);
+/** Auto-managed category ids: the standard groups plus the fine-grained
+ *  taxonomy groups. Auto-sorting only re-files species in these (never
+ *  overrides a human's custom categories). */
+const AUTO_MANAGED = new Set([
+  "plants", "fungi", "animals",
+  "birds", "mammals", "reptiles", "amphibians", "fish", "insects", "arachnids",
+]);
 
-/** Should this species be re-filed by auto-sort? (Never overrides custom categories.) */
+/** Should this species be re-filed by auto-sort? */
 function isAutoSortable(s: SpeciesEntry): boolean {
-  return s.category === "" || STANDARD_CATEGORIES.has(s.category);
+  return s.category === "" || AUTO_MANAGED.has(s.category);
 }
 
 export async function enrichProject(
@@ -110,7 +116,7 @@ export async function enrichProject(
     if (icon === undefined) continue;
     const id = categoryIdForIconic(next, icon);
     if (!next.categories.some((c) => c.id === id)) {
-      next.categories.push({ id, label: titleCase(id) });
+      next.categories.push({ id, label: labelForCategoryId(id) });
     }
     if (s.category !== id) {
       s.category = id;
@@ -120,8 +126,4 @@ export async function enrichProject(
 
   onProgress?.(1, 1);
   return { project: next, resolved, sorted, unresolved };
-}
-
-function titleCase(id: string): string {
-  return id.charAt(0).toUpperCase() + id.slice(1);
 }

@@ -9,11 +9,12 @@ Deck Curator is a fully client-side web app. Everything — your species lists, 
 1. **Start a deck** — name it (this becomes the deck's id and label).
 2. **Bring in species**, three ways:
    - **Type or paste names** — one per line; scientific names are resolved on iNaturalist to fill in common name, family, and taxon id.
-   - **iNaturalist search** — a lat/lng circle (radius in km) plus an optional taxon filter lists the most-observed species in the area; add the ones you want, with auto-picked Creative Commons photos.
+   - **iNaturalist search** — pick a place by name (geocoded), on the map, or via coordinates, then list the most-observed species in that radius; add the ones you want, with auto-picked Creative Commons photos.
    - **Spreadsheet** — the [template](#getting-started) or any survey-style workbook; category falls back to the sheet name, unknown columns are ignored.
-3. **Edit properties** — common name, scientific name, alternate names, family (common/latin), native status, invasive flag, rarity, category — inline in the table or on the species page.
-4. **Choose photos** — per species, browse the top-voted CC-licensed iNaturalist photos, pin specific ones, or upload your own photos. Every photo carries its credit (observer + license), which is exported into the manifest and rendered by the app's credits page.
-5. **Review & export** — a validation report (duplicate names, missing photos/licenses/credits) plus the archive build: `manifest.json` + `photos/`.
+3. **Edit properties** — common name, scientific name, alternate names, family (common/latin), native status, border tag, rarity, category, and your own **tags** (phases, class sessions, units) for filtering — inline in the table or on the species page.
+4. **Choose photos** — per species, browse the top-voted CC-licensed iNaturalist photos, pin specific ones, or upload your own photos. Every photo carries its credit (observer + license), which is exported into the manifest and rendered by the app's credits page. The crop editor keeps the slot's aspect so photos are never distorted.
+5. **Review** — every card laid out front and back; flag cards that need another pass, filter down to them, and click through to edit.
+6. **Review & export** — a validation report (duplicate names, missing photos/licenses/credits), the deck's **git version history** (auto-committed; restore any version), and the archive build: `manifest.json` + `photos/` + `.git/`.
 
 ## Card layouts
 
