@@ -5,6 +5,7 @@ import type { SpeciesEntry } from "~/lib/types";
 import { putFile } from "~/lib/store";
 import { slugify } from "~/lib/ids";
 import { photoCap } from "~/lib/cardGeometry";
+import { ReplacePicker } from "~/components/ReplacePicker";
 
 /**
  * iNaturalist photo browser for one species: shows CC-licensed observation
@@ -64,23 +65,43 @@ export function InatPhotoBrowser({
   }, [species.taxonId, query]);
 
   const addPhoto = useCallback(
-    async (cand: PhotoCandidate) => {
-      const index = species.photos.length;
+    async (cand: PhotoCandidate, replaceIndex?: number) => {
       const base = slugify(species.commonName || species.sciName || "photo");
-      const fileKey = `${base}-${index === 0 ? "main" : `secondary-${index}`}.jpg`;
       try {
         const blob = await downloadPhoto(cand.photo);
+        if (replaceIndex !== undefined) {
+          // Full card: overwrite the picked slot's file and swap the slot,
+          // keeping its role and clearing any crop tuned to the old image.
+          const old = species.photos[replaceIndex];
+          if (!old) return;
+          await putFile(projectId, old.fileKey, blob);
+          onChange((d) => {
+            const slot = d.photos[replaceIndex];
+            if (slot) {
+              const fresh = slotFromInatPhoto(cand.photo, cand.obs, slot.role, old.fileKey);
+              slot.id = fresh.id;
+              slot.credit = fresh.credit;
+              slot.alt = fresh.alt;
+              slot.crop = undefined;
+              slot.focus = undefined;
+            }
+          });
+          setPickedIds((prev) => new Set(prev).add(String(cand.photo.id)));
+          setStatus("Photo replaced.");
+          return;
+        }
+        const index = species.photos.length;
+        const fileKey = `${base}-${index === 0 ? "main" : `secondary-${index}`}.jpg`;
         await putFile(projectId, fileKey, blob);
+        onChange((d) => {
+          const role: "main" | "secondary" = d.photos.length === 0 ? "main" : "secondary";
+          d.photos.push(slotFromInatPhoto(cand.photo, cand.obs, role, fileKey));
+        });
+        setPickedIds((prev) => new Set(prev).add(String(cand.photo.id)));
+        setStatus("Photo added.");
       } catch (err) {
         setStatus(`Could not download photo: ${err instanceof Error ? err.message : err}`);
-        return;
       }
-      onChange((d) => {
-        const role: "main" | "secondary" = d.photos.length === 0 ? "main" : "secondary";
-        d.photos.push(slotFromInatPhoto(cand.photo, cand.obs, role, fileKey));
-      });
-      setPickedIds((prev) => new Set(prev).add(String(cand.photo.id)));
-      setStatus("Photo added.");
     },
     [species, projectId, onChange],
   );
@@ -115,6 +136,16 @@ export function InatPhotoBrowser({
 
   const cap = photoCap(species.layout);
   const full = species.photos.length >= cap;
+  /** Candidate pending a "replace which photo?" decision when the card is full. */
+  const [pending, setPending] = useState<PhotoCandidate | null>(null);
+
+  const handlePhotoClick = (cand: PhotoCandidate) => {
+    if (full && !pickedIds.has(String(cand.photo.id))) {
+      setPending(cand);
+    } else {
+      void addPhoto(cand);
+    }
+  };
 
   return (
     <section className="mt-10 border-t pt-6" data-testid="inat-photo-browser">
@@ -139,7 +170,7 @@ export function InatPhotoBrowser({
         </button>
         {full && (
           <span className="text-xs" style={{ color: "var(--muted)" }} data-testid="browser-full-note">
-            Card is full — remove a photo first.
+            Card is full — picking a photo will replace one you choose.
           </span>
         )}
       </div>
@@ -159,9 +190,8 @@ export function InatPhotoBrowser({
             <li key={String(cand.photo.id)} className="w-44">
               <button
                 className={`block w-full rounded overflow-hidden border-2 ${pickedIds.has(String(cand.photo.id)) ? "border-[var(--accent)]" : "border-transparent"}`}
-                onClick={() => void addPhoto(cand)}
-                disabled={full && !picked}
-                title={full && !picked ? "Card is full — remove a photo first" : `Add photo by ${cand.obs.user?.name || cand.obs.user?.login} (${cand.photo.license_code})`}
+                onClick={() => handlePhotoClick(cand)}
+                title={`Add photo by ${cand.obs.user?.name || cand.obs.user?.login} (${cand.photo.license_code})`}
                 data-testid={`inat-photo-${cand.photo.id}`}
               >
                 <img src={cand.photo.url.replace(/\/(square|thumb|small|medium)\./, "/medium.")} alt="" loading="lazy" className="aspect-square object-cover w-full" />
@@ -177,6 +207,18 @@ export function InatPhotoBrowser({
         })}
         {loading && <li className="text-sm" style={{ color: "var(--muted)" }}>Loading photos…</li>}
       </ul>
+      {pending && (
+        <ReplacePicker
+          projectId={projectId}
+          photos={species.photos}
+          onPick={(index) => {
+            const cand = pending;
+            setPending(null);
+            void addPhoto(cand, index);
+          }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </section>
   );
 }

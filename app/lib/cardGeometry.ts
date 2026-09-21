@@ -56,12 +56,64 @@ export function rectStyle(rect: Rect): React.CSSProperties {
   };
 }
 
-/** object-position for a photo's focal point (default: centered). */
+/** object-position for a photo's legacy focal point (default: centered). */
 export function focusStyle(focus?: { x: number; y: number }): React.CSSProperties {
   if (!focus) return {};
   const x = Math.min(1, Math.max(0, focus.x)) * 100;
   const y = Math.min(1, Math.max(0, focus.y)) * 100;
   return { objectPosition: `${x}% ${y}%` };
+}
+
+/**
+ * Style that maps a crop window (normalized 0..1 source rect) exactly onto a
+ * slot: the img is sized so the crop region fills the slot, and the slot's
+ * overflow:hidden clips everything outside. Use `objectFit: "fill"` — the
+ * editor lets the user pick the bounds freely, so mild distortion is their
+ * call (the preview shows exactly what ships).
+ */
+export function cropStyle(crop: { x: number; y: number; w: number; h: number }): React.CSSProperties {
+  return {
+    position: "absolute",
+    width: `${100 / crop.w}%`,
+    height: `${100 / crop.h}%`,
+    left: `${(-crop.x / crop.w) * 100}%`,
+    top: `${(-crop.y / crop.h) * 100}%`,
+    objectFit: "fill",
+  };
+}
+
+/** The implicit centered cover-crop for an image in a slot of the given
+ *  aspect (w/h) — the editor starts here when no explicit crop exists. */
+export function defaultCoverCrop(imageAspect: number, slotAspect: number): { x: number; y: number; w: number; h: number } {
+  if (imageAspect > slotAspect) {
+    const w = slotAspect / imageAspect;
+    return { x: (1 - w) / 2, y: 0, w, h: 1 };
+  }
+  const h = imageAspect / slotAspect;
+  return { x: 0, y: (1 - h) / 2, w: 1, h };
+}
+
+/** Clamp a crop back inside the image after editing. */
+export function clampCrop(crop: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } {
+  const w = Math.min(1, Math.max(0.05, crop.w));
+  const h = Math.min(1, Math.max(0.05, crop.h));
+  return {
+    w,
+    h,
+    x: Math.min(1 - w, Math.max(0, crop.x)),
+    y: Math.min(1 - h, Math.max(0, crop.y)),
+  };
+}
+
+/** Move a photo within the slot list; index 0 is the main photo. Pure. */
+export function reorderPhotos<T>(photos: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= photos.length || to >= photos.length) {
+    return photos;
+  }
+  const next = [...photos];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
 }
 
 /** Max photos a card can hold for its layout (mirrors the renderer's slots). */

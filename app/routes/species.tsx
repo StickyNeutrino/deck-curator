@@ -7,7 +7,9 @@ import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
 import { uuid } from "~/lib/uuid";
-import { photoCap, focusStyle } from "~/lib/cardGeometry";
+import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeometry";
+import { CropModal, slotAspectFor } from "~/components/CropModal";
+import { ReplacePicker } from "~/components/ReplacePicker";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Deck Curator — species" }];
@@ -19,6 +21,7 @@ export default function SpeciesPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [draft, setDraft] = useState<SpeciesEntry | null>(null);
   const [saved, setSaved] = useState(false);
+  const [cropSlot, setCropSlot] = useState<{ slot: SpeciesEntry["photos"][number]; index: number } | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -89,7 +92,12 @@ export default function SpeciesPage() {
 
           <Fields draft={draft} project={project} onChange={update} />
 
-          <PhotosEditor species={draft} projectId={projectId ?? ""} onChange={update} />
+          <PhotosEditor
+            species={draft}
+            projectId={projectId ?? ""}
+            onChange={update}
+            onRequestCrop={(slot, index) => setCropSlot({ slot, index })}
+          />
 
           <div className="flex gap-2 mt-4">
             <button className="btn-primary" onClick={() => void persist()} data-testid="save-species">
@@ -121,6 +129,19 @@ export default function SpeciesPage() {
       </div>
 
       <InatPhotoBrowser species={draft} projectId={projectId ?? ""} onChange={update} />
+      {cropSlot && (
+        <CropModal
+          projectId={projectId ?? ""}
+          fileKey={cropSlot.slot.fileKey}
+          slotAspect={slotAspectFor(cropSlot.slot.role, cropSlot.index)}
+          initialCrop={cropSlot.slot.crop}
+          onSave={(crop) => update((d) => {
+            const slot = d.photos[cropSlot.index];
+            if (slot) slot.crop = crop;
+          })}
+          onClose={() => setCropSlot(null)}
+        />
+      )}
     </main>
   );
 }
@@ -264,14 +285,19 @@ function PhotosEditor({
   species,
   projectId,
   onChange,
+  onRequestCrop,
 }: {
   species: SpeciesEntry;
   projectId: string;
   onChange: (f: (d: SpeciesEntry) => void) => void;
+  onRequestCrop: (slot: SpeciesEntry["photos"][number], index: number) => void;
 }) {
   const uploadRef = useRef<HTMLInputElement>(null);
   const cap = photoCap(species.layout);
   const full = species.photos.length >= cap;
+  const [dragOver, setDragOver] = useState<number | null>(null);
+  /** Pending uploads waiting for a "replace which photo?" decision. */
+  const [pendingReplace, setPendingReplace] = useState<{ files: File[] } | null>(null);
 
   const removePhoto = async (fileKey: string) => {
     await deleteFile(projectId, fileKey);
@@ -280,75 +306,113 @@ function PhotosEditor({
     });
   };
 
+  /** Move by drag; roles follow position (index 0 = main). */
+  const dropAt = (from: number, to: number) => {
+    setDragOver(null);
+    onChange((d) => {
+      d.photos = reorderPhotos(d.photos, from, to).map((p, i) => ({
+        ...p,
+        role: i === 0 ? ("main" as const) : ("secondary" as const),
+      }));
+    });
+  };
+
   const makeMain = (slotId: string) => {
-    onChange((d) => {
-      const reordered = [
-        ...d.photos.filter((p) => p.id === slotId),
-        ...d.photos.filter((p) => p.id !== slotId),
-      ].map((p, i) => ({ ...p, role: i === 0 ? ("main" as const) : ("secondary" as const) }));
-      d.photos = reordered;
-    });
+    const idx = species.photos.findIndex((p) => p.id === slotId);
+    if (idx > 0) dropAt(idx, 0);
   };
 
-  /** Swap a secondary photo with its neighbour (left ↔ right). */
   const swap = (slotId: string, dir: -1 | 1) => {
-    onChange((d) => {
-      const idx = d.photos.findIndex((p) => p.id === slotId);
-      const target = idx + dir;
-      if (idx < 1 || target < 1 || target >= d.photos.length) return;
-      [d.photos[idx], d.photos[target]] = [d.photos[target], d.photos[idx]];
-    });
+    const idx = species.photos.findIndex((p) => p.id === slotId);
+    if (idx >= 0) dropAt(idx, idx + dir);
   };
 
-  const setFocus = (slotId: string, focus: { x: number; y: number }) => {
-    onChange((d) => {
-      const slot = d.photos.find((p) => p.id === slotId);
-      if (slot) slot.focus = focus;
-    });
+  const storeUpload = async (file: File, index: number): Promise<PhotoSlotLike> => {
+    const isMain = index === 0;
+    const base = slugify(species.commonName || species.sciName || "photo");
+    const fileKey = `${base}-${isMain ? "main" : `secondary-${index}`}.jpg`;
+    await putFile(projectId, fileKey, file);
+    return {
+      id: `upload:${uuid()}`,
+      role: isMain ? "main" : "secondary",
+      credit: { observer: "You", license: "all-rights-reserved" },
+      fileKey,
+      alt: file.name,
+    };
   };
 
-  const addUploads = async (files: File[], list: SpeciesEntry) => {
-    let index = list.photos.length;
+  const addUploads = async (files: File[]) => {
+    let index = species.photos.length;
     for (const file of files) {
-      if (index >= cap) break; // hard-stop at the layout's cap
-      const isMain = index === 0;
-      const base = slugify(list.commonName || list.sciName || "photo");
-      const fileKey = `${base}-${isMain ? "main" : `secondary-${index}`}.jpg`;
-      await putFile(projectId, fileKey, file);
-      const role = isMain ? "main" : "secondary";
+      if (index >= cap) break;
+      const slot = await storeUpload(file, index);
       onChange((d) => {
-        d.photos.push({
-          id: `upload:${uuid()}`,
-          role,
-          credit: { observer: "You", license: "all-rights-reserved" },
-          fileKey,
-          alt: file.name,
-        });
+        d.photos.push(slot);
       });
       index++;
     }
+  };
+
+  /** Uploads with a full card: replace the slot the curator picks. */
+  const replaceFirstUpload = async (files: File[], slotIndex: number) => {
+    const file = files[0];
+    const old = species.photos[slotIndex];
+    if (!file || !old) return;
+    await putFile(projectId, old.fileKey, file);
+    onChange((d) => {
+      const slot = d.photos[slotIndex];
+      if (slot) {
+        slot.id = `upload:${uuid()}`;
+        slot.credit = { observer: "You", license: "all-rights-reserved" };
+        slot.alt = file.name;
+        slot.crop = undefined;
+        slot.focus = undefined;
+      }
+    });
   };
 
   return (
     <div className="mb-6" data-testid="photos-editor">
       <span className="label">
         Photos ({species.photos.length}/{cap}
-        {species.layout === "photo-single" ? " — single layout" : ""})
+        {species.layout === "photo-single" ? " — single layout" : ""}) — drag to rearrange
       </span>
       {full && (
         <p className="text-xs mb-2" data-testid="photos-full-note" style={{ color: "var(--muted)" }}>
-          Card is full — remove a photo before adding another.
+          Card is full — adding another photo will replace one you pick.
         </p>
       )}
       <ul className="flex flex-wrap gap-3 mb-3">
         {species.photos.map((slot, i) => (
-          <li key={slot.id} className="w-36" data-testid={`photo-${slot.role}`}>
-            <PhotoThumb
-              fileKey={slot.fileKey}
-              projectId={projectId}
-              focus={slot.focus}
-              onPickFocus={(x, y) => setFocus(slot.id, { x, y })}
-            />
+          <li
+            key={slot.id}
+            className="w-36"
+            data-testid={`photo-${slot.role}`}
+            draggable
+            onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(i);
+            }}
+            onDragLeave={() => setDragOver((cur) => (cur === i ? null : cur))}
+            onDrop={(e) => {
+              e.preventDefault();
+              const from = Number(e.dataTransfer.getData("text/plain"));
+              if (!Number.isNaN(from)) dropAt(from, i);
+            }}
+            style={dragOver === i ? { outline: "2px dashed var(--accent)", outlineOffset: 2, borderRadius: 8 } : undefined}
+          >
+            <div className="relative">
+              <PhotoThumb fileKey={slot.fileKey} projectId={projectId} crop={slot.crop} focus={slot.focus} />
+              <span className="absolute top-1 left-1 text-xs rounded bg-white/85 px-1 cursor-grab" title="Drag to rearrange" aria-hidden>
+                ⠿
+              </span>
+              {slot.crop && (
+                <span className="absolute bottom-1 right-1 text-[10px] bg-white/85 rounded px-1" title="Custom crop set">
+                  crop
+                </span>
+              )}
+            </div>
             <div className="text-xs mt-1 truncate" title={`${slot.credit.observer} · ${slot.credit.license}`}>
               {slot.role === "main" ? "★ " : ""}{slot.credit.observer}
             </div>
@@ -359,16 +423,13 @@ function PhotosEditor({
                   main
                 </button>
               )}
-              {i > 1 && (
-                <button className="text-xs underline" onClick={() => swap(slot.id, -1)} aria-label="Move photo left">
-                  ←
-                </button>
-              )}
-              {slot.role === "secondary" && i < species.photos.length - 1 && (
-                <button className="text-xs underline" onClick={() => swap(slot.id, 1)} aria-label="Move photo right">
-                  →
-                </button>
-              )}
+              <button
+                className="text-xs underline"
+                onClick={() => onRequestCrop(slot, i)}
+                data-testid={`crop-${slot.id}`}
+              >
+                crop
+              </button>
               <button
                 className="text-xs underline"
                 style={{ color: "var(--danger)" }}
@@ -377,6 +438,16 @@ function PhotosEditor({
                 remove
               </button>
             </div>
+            {slot.role === "secondary" && i > 1 && (
+              <button className="text-xs underline mr-2" onClick={() => swap(slot.id, -1)} aria-label="Move photo left">
+                ←
+              </button>
+            )}
+            {slot.role === "secondary" && i < species.photos.length - 1 && (
+              <button className="text-xs underline" onClick={() => swap(slot.id, 1)} aria-label="Move photo right">
+                →
+              </button>
+            )}
           </li>
         ))}
         {species.photos.length === 0 && (
@@ -394,35 +465,59 @@ function PhotosEditor({
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          void addUploads(files, species);
+          if (!files.length) return;
+          if (species.photos.length >= cap) {
+            // Full: ask which photo the first upload should replace.
+            setPendingReplace({ files });
+          } else {
+            void addUploads(files);
+          }
         }}
       />
       <button
         className="btn-secondary text-sm"
         onClick={() => uploadRef.current?.click()}
-        disabled={full}
-        title={full ? `Card holds ${cap} photo(s) — remove one first.` : undefined}
         data-testid="upload-photos"
       >
         Upload photos…
       </button>
       <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
-        Click a photo to set its focal point — the crop keeps that spot in frame (e.g. the organism
-        in a portrait photo).
+        Use “crop” to choose exactly which part of the photo fills its slot — drag the window to
+        move it, drag a corner to resize.
       </p>
+      {pendingReplace && (
+        <ReplacePicker
+          projectId={projectId}
+          photos={species.photos}
+          onPick={(index) => {
+            const files = pendingReplace.files;
+            setPendingReplace(null);
+            void replaceFirstUpload(files, index);
+          }}
+          onCancel={() => setPendingReplace(null)}
+        />
+      )}
     </div>
   );
+}
+
+interface PhotoSlotLike {
+  id: string;
+  role: "main" | "secondary";
+  credit: SpeciesEntry["photos"][number]["credit"];
+  fileKey: string;
+  alt?: string;
 }
 
 function PhotoThumb({
   fileKey,
   projectId,
-  onPickFocus,
+  crop,
   focus,
 }: {
   fileKey: string;
   projectId: string;
-  onPickFocus: (x: number, y: number) => void;
+  crop?: { x: number; y: number; w: number; h: number };
   focus?: { x: number; y: number };
 }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -440,32 +535,13 @@ function PhotoThumb({
     };
   }, [fileKey, projectId]);
 
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!onPickFocus || !src) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    onPickFocus((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
-  };
-
   if (!src) return <div className="w-36 rounded bg-[#cfcecb] aspect-[4/3]" />;
   return (
-    <div
-      className="relative w-36 rounded overflow-hidden aspect-[4/3] cursor-crosshair"
-      onClick={handleClick}
-      title="Click to set the focal point (what the crop keeps centered)"
-      data-testid="photo-thumb"
-    >
-      <img src={src} alt="" className="w-full h-full object-cover" style={focusStyle(focus)} />
-      {focus && (
-        <span
-          aria-hidden
-          className="absolute w-3 h-3 rounded-full border-2 border-white shadow"
-          style={{
-            left: `calc(${focus.x * 100}% - 6px)`,
-            top: `calc(${focus.y * 100}% - 6px)`,
-            background: "var(--accent)",
-          }}
-        />
-      )}
+    <div className="relative w-36 rounded overflow-hidden aspect-[4/3]" data-testid="photo-thumb">
+      {/* Show the actual crop when set; otherwise the plain cover view. */}
+      <div className="absolute inset-0">
+        <img src={src} alt="" style={crop ? cropStyle(crop) : focusStyle(focus)} className={crop ? undefined : "w-full h-full object-cover"} />
+      </div>
     </div>
   );
 }
