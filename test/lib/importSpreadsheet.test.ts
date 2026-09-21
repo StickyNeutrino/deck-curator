@@ -46,11 +46,11 @@ describe("spreadsheet import", () => {
     expect(oak.commonName).toBe("Coast Live Oak");
     expect(oak.familyLatin).toBe("Fagaceae");
     expect(oak.native).toBe("native");
-    expect(oak.invasive).toBe(false);
+    expect(oak.border).toBe("none");
     expect(oak.rarity).toBe("CNPS 1B.2".replace("1B.2", "1B.1"));
     const mustard = result.species[1];
     expect(mustard.native).toBe("non-native");
-    expect(mustard.invasive).toBe(true);
+    expect(mustard.border).toBe("invasive");
     expect(mustard.altNames).toEqual(["Shortpod Mustard", "Sahara Mustard"]);
     // Default category assignment comes from the Category column.
     expect(result.species.every((s) => s.category === result.categories[0].id)).toBe(true);
@@ -90,7 +90,7 @@ describe("spreadsheet import", () => {
     expect(names).toContain("Quercus agrifolia");
     expect(names).toContain("Brassica nigra");
     const mustard = result.species.find((s) => s.sciName === "Brassica nigra")!;
-    expect(mustard.invasive).toBe(true);
+    expect(mustard.border).toBe("invasive");
   });
 });
 

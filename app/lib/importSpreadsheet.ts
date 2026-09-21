@@ -87,7 +87,7 @@ export function parseSpreadsheet(data: ArrayBuffer, filename: string): ImportRes
         familyLatin: str(row[findKey(headerMap, "familyLatin")]) || undefined,
         familyCommon: str(row[findKey(headerMap, "familyCommon")]) || undefined,
         native,
-        invasive: invasiveField ? TRUE_WORDS.test(invasiveField) : false,
+        border: invasiveField ? (TRUE_WORDS.test(invasiveField) ? "invasive" : "none") : "none",
         rarity: str(row[findKey(headerMap, "rarity")]) || undefined,
         notes: str(row[findKey(headerMap, "notes")]) || undefined,
       });
@@ -241,7 +241,7 @@ function mergeSpecies(existing: SpeciesEntry[], incoming: SpeciesEntry[]): Speci
         familyLatin: s.familyLatin ?? target.familyLatin,
         familyCommon: s.familyCommon ?? target.familyCommon,
         native: s.native !== "unknown" ? s.native : target.native,
-        invasive: s.invasive || target.invasive,
+        border: (s.border && s.border !== "none" ? s.border : target.border) || target.border,
         rarity: s.rarity ?? target.rarity,
         notes: s.notes ?? target.notes,
         category: s.category || target.category,

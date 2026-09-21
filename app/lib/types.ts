@@ -25,6 +25,29 @@ export type LicenseCode = (typeof UPLOAD_LICENSES)[number];
 
 export type NativeStatus = "native" | "non-native" | "unknown";
 
+/** Card border styles — the colored tag the flashcards app draws around a
+ *  card. "invasive" is the original red invasive marker; the others are
+ *  curator-chosen emphasis colors (exported as manifest `border`). */
+export type BorderStyle = "none" | "invasive" | "caution" | "rare" | "notable";
+
+export interface BorderStyleDef {
+  id: BorderStyle;
+  label: string;
+  color: string;
+}
+
+export const BORDER_STYLES: BorderStyleDef[] = [
+  { id: "none", label: "None", color: "transparent" },
+  { id: "invasive", label: "Invasive", color: "#b3261e" },
+  { id: "caution", label: "Caution", color: "#b45309" },
+  { id: "rare", label: "Rare", color: "#6d28d9" },
+  { id: "notable", label: "Notable", color: "#1d4ed8" },
+];
+
+export function borderStyleDef(style: BorderStyle | undefined): BorderStyleDef {
+  return BORDER_STYLES.find((b) => b.id === style) ?? BORDER_STYLES[0];
+}
+
 /** "photo-trio": 1 main + up to 2 secondary photos (the Healthy Canyons look).
  *  "photo-single": one main photo only. */
 export type CardLayout = "photo-trio" | "photo-single";
@@ -67,7 +90,8 @@ export interface SpeciesEntry {
   familyCommon?: string;
   familyLatin?: string;
   native: NativeStatus;
-  invasive: boolean;
+  /** Colored card border tag (see BORDER_STYLES); "invasive" is the red one. */
+  border: BorderStyle;
   rarity?: string;
   taxonId?: number;
   layout: CardLayout;
@@ -111,7 +135,7 @@ export function makeSpecies(partial: Partial<SpeciesEntry> = {}): SpeciesEntry {
     familyCommon: partial.familyCommon,
     familyLatin: partial.familyLatin,
     native: partial.native ?? "unknown",
-    invasive: partial.invasive ?? false,
+    border: partial.border ?? "none",
     rarity: partial.rarity,
     taxonId: partial.taxonId,
     layout: partial.layout ?? "photo-trio",
@@ -119,6 +143,24 @@ export function makeSpecies(partial: Partial<SpeciesEntry> = {}): SpeciesEntry {
     notes: partial.notes,
     inatResolved: partial.inatResolved,
   };
+}
+
+/** True when a species carries the original red invasive marker. */
+export function isInvasive(s: Pick<SpeciesEntry, "border">): boolean {
+  return s.border === "invasive";
+}
+
+/** Migrate older project records: the boolean `invasive` tag became the
+ *  border-style enum. Mutates and returns the given project. */
+export function migrateProject(project: Project): Project {
+  for (const s of project.species) {
+    const legacy = (s as unknown as { invasive?: boolean }).invasive;
+    if (legacy === true && (!s.border || s.border === "none")) {
+      s.border = "invasive";
+    }
+    delete (s as unknown as { invasive?: boolean }).invasive;
+  }
+  return project;
 }
 
 /** The credit data exported onto the manifest's flattened `credits` list. */

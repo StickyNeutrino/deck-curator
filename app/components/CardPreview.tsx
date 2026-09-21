@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PhotoSlot, SpeciesEntry } from "~/lib/types";
+import { isInvasive, borderStyleDef } from "~/lib/types";
 import { creditText, slotsFor, rectStyle, focusStyle, cropStyle, CARD_W, CARD_H } from "~/lib/cardGeometry";
 
 /**
@@ -87,8 +88,16 @@ export function CardFront({
 export function CardBack({ species }: { species: SpeciesEntry }) {
   const title = species.commonName || species.sciName;
   const altLine = species.altNames.length ? `aka ${species.altNames.join(" · ")}` : null;
+  const invasive = isInvasive(species);
+  const border = borderStyleDef(species.border);
   return (
-    <div className="preview-card" data-testid="card-back" data-invasive={species.invasive}>
+    <div
+      className="preview-card"
+      data-testid="card-back"
+      data-invasive={invasive}
+      data-border={species.border}
+      style={border.id !== "none" ? { border: `6px solid ${border.color}` } : undefined}
+    >
       <div className="logo-chip" />
       <div className="preview-back">
         <div className="title">{title}</div>
@@ -121,9 +130,9 @@ export function CardBack({ species }: { species: SpeciesEntry }) {
             {species.familyLatin}
           </div>
         )}
-        {(species.native !== "unknown" || species.invasive) && (
+        {(species.native !== "unknown" || invasive) && (
           <div style={{ position: "absolute", top: "64%", left: "5%", right: "5%", fontWeight: 600 }}>
-            {species.invasive ? "Non-native (Invasive)" : species.native === "native" ? "Native" : "Non-native"}
+            {invasive ? "Non-native (Invasive)" : species.native === "native" ? "Native" : "Non-native"}
           </div>
         )}
         {species.rarity && (

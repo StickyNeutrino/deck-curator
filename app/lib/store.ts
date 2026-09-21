@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Project } from "./types";
+import { migrateProject } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 
 /**
@@ -64,7 +65,9 @@ export async function saveProject(project: Project, at?: string): Promise<void> 
 
 export async function getProject(id: string): Promise<Project | undefined> {
   const database = await db();
-  return (await database.get("projects", id)) as Project | undefined;
+  const record = (await database.get("projects", id)) as Project | undefined;
+  // Older projects used a boolean invasive flag; migrate to border styles.
+  return record ? migrateProject(record) : undefined;
 }
 
 export async function deleteProject(id: string): Promise<void> {

@@ -51,10 +51,18 @@ See **docs/DECK_FORMAT.md**. A curated deck archive is:
 ```
 <deck-id>.zip
 ├── manifest.json   # cardFormat: "data", categories, cards, photos, credits
-└── photos/         # <slug>-main.jpg, <slug>-secondary-N.jpg
+├── photos/         # <slug>-main.jpg, <slug>-secondary-N.jpg
+└── .git/           # the deck's full version history (see below)
 ```
 
-It doubles as a deck-repository layout: drop the unzipped directory into the app repo's `decks/` registry to ship a curated deck as a built-in.
+It doubles as a deck-repository layout: drop the unzipped directory into the
+app repo's `decks/` registry to ship a curated deck as a built-in. The archive
+carries the deck's **git history**: every deck is its own git repository in
+your browser (real git objects, committed automatically as you work), and the
+zip includes `.git/` — so unzipped deck folders stay diffable, restorable,
+and history-preserving with standard git tooling. You can also re-import any
+exported deck archive ("Import deck (.zip)…" on the home page) to keep editing
+it.
 
 ## Privacy
 

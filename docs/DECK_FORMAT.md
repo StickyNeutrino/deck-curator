@@ -63,7 +63,8 @@ pre-rendered JPGs) — they keep working exactly as before.
   "familyCommon": "Nettle Family",     // optional
   "familyLatin": "Urticaceae",         // optional
   "native": "non-native",              // "native" | "non-native" | "unknown" (optional)
-  "invasive": true,                    // optional; the app draws the red invasive border
+  "invasive": true,                    // optional; legacy red border flag (border: "invasive" implies it)
+  "border": "invasive",                // optional colored border: "invasive" | "caution" | "rare" | "notable"
   "rarity": null,                      // optional free text (CNPS/CESA/FESA …)
   "taxonId": 53315,                    // optional iNaturalist taxon id
   "credits": [                         // optional; flattened photo credits for the credits page
@@ -114,6 +115,11 @@ Card canvas is a 750×1050 portrait card with background `#e4e3df`:
   (italic), family common, family latin (italic), native status, rarity —
   centered on the card, plus the white logo chip at top-left and the red
   invasive border applied by the app when `invasive` is true.
+- **Border tags**: `border` draws a colored border around the card back —
+  `invasive` = red `#b3261e` (the classic invasive marker), `caution` =
+  amber `#b45309`, `rare` = purple `#6d28d9`, `notable` = blue `#1d4ed8`.
+  `border: "invasive"` is equivalent to (and also emitted as) the legacy
+  `invasive: true` flag, which image-based decks continue to use.
 - **Card names are unique deck-wide** (the app keys study order and lookup by
   `name`). A species with several cards (same species, different photos) is
   named "Name (2)", "Name (3)"…; render the back title from `commonName`

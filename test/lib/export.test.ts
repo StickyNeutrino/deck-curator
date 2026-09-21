@@ -15,7 +15,7 @@ function sampleProject() {
     sciName: "Urtica urens",
     category: "plants",
     native: "non-native",
-    invasive: true,
+    border: "invasive",
     taxonId: 53315,
   });
   species.photos.push(

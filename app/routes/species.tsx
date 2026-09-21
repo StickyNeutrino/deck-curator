@@ -8,6 +8,7 @@ import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
 import { uuid } from "~/lib/uuid";
 import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeometry";
+import { BORDER_STYLES, type BorderStyle } from "~/lib/types";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { ReplacePicker } from "~/components/ReplacePicker";
 
@@ -244,15 +245,31 @@ function Fields({
         />
       </label>
       <div className="sm:col-span-2 flex flex-wrap items-center gap-4">
-        <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
-          <input
-            type="checkbox"
-            checked={draft.invasive}
-            onChange={(e) => onChange((d) => { d.invasive = e.target.checked; })}
-            data-testid="invasive-checkbox"
-          />
-          Invasive
-        </label>
+        <div className="inline-flex items-center gap-2 text-sm" role="radiogroup" aria-label="Border style">
+          <span className="label !mb-0">Border</span>
+          {BORDER_STYLES.map((style) => (
+            <button
+              key={style.id}
+              role="radio"
+              aria-checked={draft.border === style.id}
+              className="inline-flex items-center gap-1.5 rounded-full border-2 px-2.5 py-1 text-xs cursor-pointer"
+              style={{
+                borderColor: draft.border === style.id ? style.color : "var(--border)",
+                fontWeight: draft.border === style.id ? 600 : 400,
+              }}
+              onClick={() => onChange((d) => { d.border = style.id; })}
+              data-testid={`border-${style.id}`}
+              title={style.id === "none" ? "No border" : `${style.label} (${style.color})`}
+            >
+              <span
+                aria-hidden
+                className="inline-block w-3 h-3 rounded-sm"
+                style={{ background: style.color === "transparent" ? "var(--border)" : style.color }}
+              />
+              {style.label}
+            </button>
+          ))}
+        </div>
         <label className="text-sm">
           Card layout{" "}
           <select

@@ -81,7 +81,10 @@ export function cardFromSpecies(s: SpeciesEntry, exportName?: string): object {
     familyCommon: s.familyCommon || undefined,
     familyLatin: s.familyLatin || undefined,
     native: s.native === "unknown" ? undefined : s.native,
-    invasive: s.invasive || undefined,
+    // Border tag: the original red invasive marker stays as `invasive: true`
+    // for backwards compatibility; other styles ride on `border`.
+    invasive: s.border === "invasive" || undefined,
+    border: s.border && s.border !== "none" && s.border !== "invasive" ? s.border : undefined,
     rarity: s.rarity || null,
     taxonId: s.taxonId,
     credits: s.photos.map((p) => creditFromSlot(p)),
@@ -109,6 +112,19 @@ export async function exportDeck(project: Project): Promise<ExportResult> {
         zip[`photos/${slot.fileKey}`] = new Uint8Array(await blobToArrayBuffer(blob));
       }
     }
+  }
+  // Ship the project's git history inside the archive: unzipping yields a
+  // real git repository (drop it into decks/ and history stays intact).
+  try {
+    const { collectGitDir } = await import("./versioning");
+    const gitDir = await collectGitDir(project.id);
+    if (gitDir) {
+      for (const [path, data] of gitDir) {
+        zip[path] = data;
+      }
+    }
+  } catch {
+    // No history available (versioning disabled) — export without .git.
   }
   const packed = zipSync(zip, { level: 6 });
   const blob = new Blob([packed as unknown as BlobPart], { type: "application/zip" });

@@ -53,7 +53,7 @@ describe("species route", () => {
     const commonName = await screen.findByTestId("common-name");
     await user.clear(commonName);
     await user.type(commonName, "Burning Nettle");
-    await user.click(screen.getByTestId("invasive-checkbox"));
+    await user.click(screen.getByTestId("border-invasive"));
     await user.selectOptions(await screen.findByTestId("native-status"), "non-native");
     await user.click(screen.getByTestId("save-species"));
 
@@ -61,7 +61,7 @@ describe("species route", () => {
       const { getProject } = await import("~/lib/store");
       const loaded = (await getProject(project.id))!;
       expect(loaded.species[0].commonName).toBe("Burning Nettle");
-      expect(loaded.species[0].invasive).toBe(true);
+      expect(loaded.species[0].border).toBe("invasive");
       expect(loaded.species[0].native).toBe("non-native");
     });
   });

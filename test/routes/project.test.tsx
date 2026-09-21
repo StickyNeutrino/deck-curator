@@ -57,24 +57,23 @@ describe("project route", () => {
     expect(loaded.species.map((s) => s.sciName)).toEqual(["Quercus agrifolia", "Dudleya edulis"]);
   });
 
-  it("edits native status and invasive flags inline", async () => {
+  it("edits native status and border style inline", async () => {
     const user = userEvent.setup();
     const project = newProject("Inline Test");
     project.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }));
     await saveProject(project);
     renderProject(project.id);
 
-    const row = (await screen.findByTestId("species-row")) as HTMLElement;
+    await screen.findByTestId("species-row");
     const status = await screen.findByLabelText("Native status of Oak");
     await user.selectOptions(status, "native");
-    await user.click(screen.getByLabelText("Invasive: Oak"));
+    await user.selectOptions(await screen.findByLabelText("Border style of Oak"), "invasive");
 
     await waitFor(async () => {
       const loaded = (await getProject(project.id))!;
       expect(loaded.species[0].native).toBe("native");
-      expect(loaded.species[0].invasive).toBe(true);
+      expect(loaded.species[0].border).toBe("invasive");
     });
-    row && void row; // keep the element reference meaningful
   });
 
   it("removes a species after confirm", async () => {

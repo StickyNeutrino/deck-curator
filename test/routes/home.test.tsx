@@ -31,8 +31,8 @@ describe("home route", () => {
     const user = userEvent.setup();
     renderHome();
     await user.click(await screen.findByRole("button", { name: "New deck" }));
-    await user.type(screen.getByLabelText("Deck name"), "Mission Trails");
-    await user.click(screen.getByRole("button", { name: "Create" }));
+    await user.type(screen.getByTestId("new-deck-name"), "Mission Trails");
+    await user.click(screen.getByTestId("create-deck"));
 
     await waitFor(async () => {
       const projects = await listProjects();

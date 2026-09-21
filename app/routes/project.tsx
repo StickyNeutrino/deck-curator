@@ -2,12 +2,13 @@ import type { Route } from "./+types/project";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { getProject, saveProject } from "~/lib/store";
-import type { Project, SpeciesEntry } from "~/lib/types";
 import { AddSpeciesModal } from "~/components/AddSpeciesModal";
 import { CategoriesManager } from "~/components/CategoriesManager";
 import { EnrichButton } from "~/components/EnrichButton";
+import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "~/lib/types";
 import { serializeProjectFile, parseProjectFile } from "~/lib/projectFile";
 import { makeId } from "~/lib/ids";
+import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: "Deck Curator — project" }];
@@ -23,7 +24,11 @@ export default function ProjectPage() {
   useEffect(() => {
     if (!projectId) return;
     void getProject(projectId).then((p) => {
-      if (p) setProject(p);
+      if (p) {
+        setProject(p);
+        // Make sure the git history exists from the moment a project opens.
+        void ensureRepo(p).catch(() => undefined);
+      }
       else setNotFound(true);
     });
   }, [projectId]);
@@ -41,6 +46,16 @@ export default function ProjectPage() {
     },
     [],
   );
+
+  // Auto-version: commit the deck to its git history shortly after the last
+  // change settles. Failures are swallowed inside commitDeckVersion.
+  useEffect(() => {
+    if (!project) return;
+    const handle = setTimeout(() => {
+      void commitDeckVersion(project);
+    }, 12_000);
+    return () => clearTimeout(handle);
+  }, [project]);
 
   if (notFound) {
     return (
@@ -82,6 +97,14 @@ export default function ProjectPage() {
         />
       )}
       <div className="mt-8 flex flex-wrap gap-2 border-t pt-6" style={{ borderColor: "var(--border)" }}>
+        <button
+          className="btn-secondary"
+          data-testid="go-review"
+          onClick={() => navigate(`/project/${project.id}/review`)}
+          title="See every card laid out — front and back — to spot issues"
+        >
+          Review deck…
+        </button>
         <EnrichButton project={project} onChange={update} />
         <button
           className="btn-primary"
@@ -157,22 +180,27 @@ export function LoadProjectButton({ onLoaded }: { onLoaded: (p: Project) => void
 function ProjectHeader({ project, onChange }: { project: Project; onChange: (f: (d: Project) => void) => void }) {
   return (
     <header className="mb-6">
-      <input
-        className="w-full text-2xl font-bold bg-transparent border-b focus:outline-none py-1"
-        style={{ borderColor: "var(--border)" }}
-        value={project.deckLabel}
-        aria-label="Deck label"
-        data-testid="deck-label"
-        onChange={(e) => onChange((d) => { d.deckLabel = e.target.value; })}
-      />
-      <textarea
-        className="w-full text-sm bg-transparent border rounded mt-2 p-2"
-        rows={2}
-        placeholder="Description shown in the flashcards app…"
-        value={project.description}
-        aria-label="Deck description"
-        onChange={(e) => onChange((d) => { d.description = e.target.value; })}
-      />
+      <label className="block mb-3">
+        <span className="label">Deck name — shown in the flashcards app menu</span>
+        <input
+          className="field text-lg font-semibold"
+          value={project.deckLabel}
+          aria-label="Deck label"
+          data-testid="deck-label"
+          onChange={(e) => onChange((d) => { d.deckLabel = e.target.value; })}
+        />
+      </label>
+      <label className="block">
+        <span className="label">Description — shown on the credits page</span>
+        <textarea
+          className="field text-sm"
+          rows={2}
+          placeholder="What does this deck cover?"
+          value={project.description}
+          aria-label="Deck description"
+          onChange={(e) => onChange((d) => { d.description = e.target.value; })}
+        />
+      </label>
     </header>
   );
 }
@@ -258,18 +286,23 @@ function SpeciesTable({
                     <option value="native">Native</option>
                     <option value="non-native">Non-native</option>
                   </select>
-                  <label className="ml-2 inline-flex items-center gap-1 text-xs cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={s.invasive}
-                      onChange={(e) => onChange((d) => {
-                        const target = d.species.find((x) => x.id === s.id);
-                        if (target) target.invasive = e.target.checked;
-                      })}
-                      aria-label={`Invasive: ${s.commonName}`}
-                    />
-                    invasive
-                  </label>
+                  <select
+                    className="field !py-1 !px-2 !w-auto text-xs mt-1"
+                    value={s.border}
+                    onChange={(e) => onChange((d) => {
+                      const target = d.species.find((x) => x.id === s.id);
+                      if (target) target.border = e.target.value as SpeciesEntry["border"];
+                    })}
+                    aria-label={`Border style of ${s.commonName}`}
+                    data-testid={`border-select-${s.id}`}
+                    style={s.border !== "none" ? { color: borderStyleDef(s.border).color } : undefined}
+                  >
+                    {BORDER_STYLES.map((style) => (
+                      <option key={style.id} value={style.id}>
+                        {style.id === "none" ? "no border" : style.label}
+                      </option>
+                    ))}
+                  </select>
                 </td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   <button

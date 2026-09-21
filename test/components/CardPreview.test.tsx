@@ -50,7 +50,7 @@ describe("CardBack", () => {
       familyCommon: "Nettle Family",
       familyLatin: "Urticaceae",
       native: "non-native",
-      invasive: true,
+      border: "invasive",
       rarity: "CNPS 2B.3",
     });
     render(<CardBack species={species} />);
@@ -66,7 +66,7 @@ describe("CardBack", () => {
   });
 
   it("omits the status line for unknown natives", () => {
-    const species = makeSpecies({ commonName: "Mystery", native: "unknown", invasive: false });
+    const species = makeSpecies({ commonName: "Mystery", native: "unknown", border: "none" });
     render(<CardBack species={species} />);
     expect(screen.getByTestId("card-back").textContent).not.toContain("Native");
   });

@@ -1,5 +1,5 @@
 import type { Route } from "./+types/home";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router";
 import { listProjects, deleteProject, type ProjectSummary } from "~/lib/store";
 import { newProject, templateWorkbook } from "~/lib/importSpreadsheet";
@@ -18,6 +18,10 @@ export default function Home() {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     listProjects().then(setProjects).catch(() => setProjects([]));
@@ -26,8 +30,24 @@ export default function Home() {
   const createProject = useCallback(() => {
     const label = name.trim() || "Untitled deck";
     const project = newProject(label);
+    project.description = description.trim();
     void saveProject(project).then(() => navigate(`/project/${project.id}`));
-  }, [name, navigate]);
+  }, [name, description, navigate]);
+
+  const importArchive = useCallback(async (file: File) => {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const { importDeckArchive } = await import("~/lib/importDeck");
+      const project = await importDeckArchive(file);
+      await saveProject(project);
+      navigate(`/project/${project.id}`);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImporting(false);
+    }
+  }, [navigate]);
 
   const downloadTemplate = useCallback(() => {
     const buf = templateWorkbook();
@@ -67,27 +87,46 @@ export default function Home() {
         <h2 className="font-semibold mb-3">Start a new deck</h2>
         {creating ? (
           <form
-            className="flex gap-2"
+            className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
               createProject();
             }}
           >
-            <input
-              autoFocus
-              className="field"
-              style={{ maxWidth: 320 }}
-              placeholder="Deck name — e.g. “Mission Trails Plants”"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              aria-label="Deck name"
-            />
-            <button type="submit" className="btn-primary">
-              Create
-            </button>
-            <button type="button" className="btn-secondary" onClick={() => setCreating(false)}>
-              Cancel
-            </button>
+            <label className="block">
+              <span className="label">Deck name — shown in the flashcards app menu</span>
+              <input
+                autoFocus
+                className="field"
+                style={{ maxWidth: 420 }}
+                placeholder="e.g. “Mission Trails Plants”"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                aria-label="Deck name"
+                data-testid="new-deck-name"
+              />
+            </label>
+            <label className="block">
+              <span className="label">Description — what the deck covers (optional, editable later)</span>
+              <textarea
+                className="field"
+                rows={2}
+                style={{ maxWidth: 420 }}
+                placeholder="e.g. Common plants of the Mission Trails Regional Park canyons"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                aria-label="Deck description"
+                data-testid="new-deck-description"
+              />
+            </label>
+            <div className="flex gap-2">
+              <button type="submit" className="btn-primary" data-testid="create-deck">
+                Create deck
+              </button>
+              <button type="button" className="btn-secondary" onClick={() => setCreating(false)}>
+                Cancel
+              </button>
+            </div>
           </form>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -97,7 +136,32 @@ export default function Home() {
             <button className="btn-secondary" onClick={downloadTemplate}>
               Download spreadsheet template
             </button>
+            <input
+              ref={archiveInputRef}
+              type="file"
+              accept=".zip"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void importArchive(file);
+                e.target.value = "";
+              }}
+            />
+            <button
+              className="btn-secondary"
+              onClick={() => archiveInputRef.current?.click()}
+              disabled={importing}
+              data-testid="import-deck"
+              title="Open a deck exported from Deck Curator (or the flashcards app) and keep editing it"
+            >
+              {importing ? "Importing…" : "Import deck (.zip)…"}
+            </button>
           </div>
+        )}
+        {importError && (
+          <p className="text-sm mt-3" role="alert" style={{ color: "var(--danger)" }} data-testid="import-error">
+            {importError}
+          </p>
         )}
       </section>
 
