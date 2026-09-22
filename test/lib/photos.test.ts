@@ -15,6 +15,8 @@ describe("crop windows", () => {
       left: "-50%",
       top: "-20%",
       objectFit: "fill",
+      maxWidth: "none",
+      maxHeight: "none",
     });
     expect(cropStyle({ x: 0, y: 0, w: 1, h: 1 })).toEqual({
       position: "absolute",
@@ -23,6 +25,8 @@ describe("crop windows", () => {
       left: "0%",
       top: "0%",
       objectFit: "fill",
+      maxWidth: "none",
+      maxHeight: "none",
     });
   });
 

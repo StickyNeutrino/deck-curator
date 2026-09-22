@@ -152,6 +152,35 @@ describe("validation", () => {
   });
 });
 
+describe("animation export", () => {
+  it("exports the clip file and still, and the zip carries both", async () => {
+    const project = newProject("Anim");
+    const entry = makeSpecies({ commonName: "Oak", category: "plants" });
+    entry.photos.push({
+      id: "u1",
+      role: "main",
+      fileKey: "oak-frame.jpg",
+      credit: { observer: "A", license: "cc0" },
+      animation: { fileKey: "oak-anim.mp4", kind: "video", durationSec: 4.5 },
+    });
+    project.species.push(entry);
+    await saveProject(project);
+    await putFile(project.id, "oak-frame.jpg", new Blob(["still"]));
+    await putFile(project.id, "oak-anim.mp4", new Blob(["clip"]));
+
+    const { blob } = await exportDeck(project);
+    const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
+    expect(Object.keys(files)).toContain("photos/oak-anim.mp4");
+    expect(Object.keys(files)).toContain("photos/oak-frame.jpg");
+
+    const card = (buildManifest(project) as any).categories[0].cards[0];
+    expect(card.photos[0].file).toBe("photos/oak-frame.jpg");
+    expect(card.photos[0].animation).toEqual({
+      file: "photos/oak-anim.mp4", kind: "video", durationSec: 4.5,
+    });
+  });
+});
+
 describe("variant card naming", () => {
   it("dedupes export names deck-wide: first card plain, extras 'Name (2)'", () => {
     const project = newProject("Variants");

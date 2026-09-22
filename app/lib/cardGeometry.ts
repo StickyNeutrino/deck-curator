@@ -79,6 +79,9 @@ export function cropStyle(crop: { x: number; y: number; w: number; h: number }):
     left: `${(-crop.x / crop.w) * 100}%`,
     top: `${(-crop.y / crop.h) * 100}%`,
     objectFit: "fill",
+    // Unclamped: the crop window must never be shrunk back to slot size.
+    maxWidth: "none",
+    maxHeight: "none",
   };
 }
 

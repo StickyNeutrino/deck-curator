@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PhotoSlot, SpeciesEntry } from "~/lib/types";
 import { isInvasive, borderStyleDef } from "~/lib/types";
 import { creditText, slotsFor, rectStyle, focusStyle, cropStyle, CARD_W, CARD_H } from "~/lib/cardGeometry";
@@ -84,12 +84,32 @@ export function CardFront({
   );
 }
 
+/** Title sizing mirrors the app's DataCard back: 72px design max, shrunk to
+ *  fit — without this, long names overlap the sci-name line below (most
+ *  visible on the review grid where many previews stack up). */
+const TITLE_MAX_EM = 6;
+const TITLE_MIN_EM = 2.5;
+const TITLE_STEP_EM = 0.25;
+
 /** Card back: the text stack, mirroring the Healthy Canyons rendered backs. */
 export function CardBack({ species }: { species: SpeciesEntry }) {
+  const titleRef = useRef<HTMLDivElement | null>(null);
   const title = species.commonName || species.sciName;
   const altLine = species.altNames.length ? `aka ${species.altNames.join(" · ")}` : null;
   const invasive = isInvasive(species);
   const border = borderStyleDef(species.border);
+
+  useLayoutEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    let size = TITLE_MAX_EM;
+    el.style.fontSize = `${size}em`;
+    while (size > TITLE_MIN_EM && el.scrollWidth > el.clientWidth + 1) {
+      size -= TITLE_STEP_EM;
+      el.style.fontSize = `${size}em`;
+    }
+  }, [title]);
+
   return (
     <div
       className="preview-card"
@@ -100,7 +120,7 @@ export function CardBack({ species }: { species: SpeciesEntry }) {
     >
       <div className="logo-chip" />
       <div className="preview-back">
-        <div className="title">{title}</div>
+        <div className="title" ref={titleRef} data-testid="card-back-title">{title}</div>
         {altLine && (
           <div
             className="alt-names"

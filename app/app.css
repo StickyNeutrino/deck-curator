@@ -131,6 +131,9 @@ button {
   position: absolute;
   inset: 0;
   text-align: center;
+  /* 12px on the 750px design canvas — the base all back text sizes in em
+     from, matching the flashcards app's data-card-content. */
+  font-size: 1.6cqw;
 }
 
 .preview-back .title {
@@ -140,6 +143,9 @@ button {
   right: 5%;
   font-weight: 700;
   line-height: 1.1;
+  font-size: 6em; /* 72px design — auto-shrunk by CardBack */
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .preview-back .alt-names {

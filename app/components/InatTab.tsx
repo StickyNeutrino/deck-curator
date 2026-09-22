@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
-import { candidatePhotos, pickDistinct, downloadPhoto, slotFromInatPhoto, fetchTaxonDetail } from "~/lib/resolve";
+import { candidatePhotos, pickDistinct, fetchTaxonDetail } from "~/lib/resolve";
+import { acquireMediaSlot } from "~/lib/media";
+import { isVideoMedia } from "~/lib/inat";
 import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
 import { inatGet, type InatTaxon } from "~/lib/inat";
 import { slugify } from "~/lib/ids";
@@ -75,6 +77,7 @@ export function InatTab({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [photosPerCard, setPhotosPerCard] = useState(3);
+  const [includeVideos, setIncludeVideos] = useState(false);
   const [resultLimit, setResultLimit] = useState<number>(30);
   const [cardsPerSpecies, setCardsPerSpecies] = useState(1);
   const [busyName, setBusyName] = useState<string | null>(null);
@@ -191,7 +194,7 @@ export function InatTab({
           loc?.lat != null && loc?.lng != null
             ? { lat: loc.lat, lng: loc.lng, radiusKm: loc.radiusKm || 10 }
             : undefined;
-        const candidates = await candidatePhotos(result.id, photoScope, opts.exclude);
+        const candidates = await candidatePhotos(result.id, photoScope, opts.exclude, { includeVideos });
         const picked = pickDistinct(candidates, photosPerCard);
         const existingCards = cardsFor(result);
 
@@ -224,15 +227,17 @@ export function InatTab({
           familyCommon,
           layout: photosPerCard === 1 ? "photo-single" : "photo-trio",
         });
+        const base = slugify(result.name);
         for (let i = 0; i < picked.length; i++) {
           const pick = picked[i];
-          const fileKey = `${slugify(result.name)}-${i === 0 ? "main" : `secondary-${i}`}.jpg`;
           try {
-            const blob = await downloadPhoto(pick.photo);
-            await putFile(project.id, fileKey, blob);
-            entry.photos.push(
-              slotFromInatPhoto(pick.photo, pick.obs, i === 0 ? "main" : "secondary", fileKey),
-            );
+            const slot = await acquireMediaSlot(pick.photo, pick.obs, {
+              role: i === 0 ? "main" : "secondary",
+              base,
+              includeAnimated: includeVideos,
+              projectId: project.id,
+            });
+            if (slot) entry.photos.push(slot);
           } catch {
             // A failed download just means fewer photos on the card.
           }
@@ -260,7 +265,7 @@ export function InatTab({
         setBusyName(null);
       }
     },
-    [loc, photosPerCard, project.id, project.categories, cardsFor, onChange],
+    [loc, photosPerCard, includeVideos, project.id, project.categories, cardsFor, onChange],
   );
 
   /** Add every listed species (cardsPerSpecies cards each, photo-distinct). */
@@ -402,6 +407,18 @@ export function InatTab({
             <option value={2}>up to 2</option>
             <option value={3}>up to 3 (trio)</option>
           </select>
+        </label>
+        <label
+          className="inline-flex items-center gap-2 text-sm cursor-pointer"
+          title="Allow animated GIFs and video clips as card media. Cards display a still frame you pick; the clip is stored for playback."
+        >
+          <input
+            type="checkbox"
+            checked={includeVideos}
+            onChange={(e) => setIncludeVideos(e.target.checked)}
+            data-testid="inat-include-videos"
+          />
+          Include animated GIFs &amp; videos
         </label>
       </div>
       {error && (

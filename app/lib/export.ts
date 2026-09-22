@@ -82,6 +82,11 @@ export function cardFromSpecies(s: SpeciesEntry, exportName?: string): object {
       focus: !p.crop && p.focus && (Math.abs(p.focus.x - 0.5) > 0.01 || Math.abs(p.focus.y - 0.5) > 0.01)
         ? { x: round2(p.focus.x), y: round2(p.focus.y) }
         : undefined,
+      // Moving media: the display image is `file` (the picked still); the
+      // clip itself is included so players can offer playback.
+      animation: p.animation
+        ? { file: `photos/${p.animation.fileKey}`, kind: p.animation.kind, durationSec: p.animation.durationSec }
+        : undefined,
       credit: creditFromSlot(p),
     })),
     sciName: s.sciName || undefined,
@@ -117,9 +122,12 @@ export async function exportDeck(project: Project): Promise<ExportResult> {
   };
   for (const species of project.species) {
     for (const slot of species.photos) {
-      const blob = files.get(slot.fileKey);
-      if (blob) {
-        zip[`photos/${slot.fileKey}`] = new Uint8Array(await blobToArrayBuffer(blob));
+      for (const key of [slot.fileKey, slot.animation?.fileKey]) {
+        if (!key) continue;
+        const blob = files.get(key);
+        if (blob) {
+          zip[`photos/${key}`] = new Uint8Array(await blobToArrayBuffer(blob));
+        }
       }
     }
   }

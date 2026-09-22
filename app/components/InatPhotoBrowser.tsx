@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PhotoCandidate } from "~/lib/resolve";
-import { candidatePhotos, pickDistinct, downloadPhoto, slotFromInatPhoto } from "~/lib/resolve";
+import { candidatePhotos, pickDistinct } from "~/lib/resolve";
+import { acquireMediaSlot } from "~/lib/media";
+import { isVideoMedia } from "~/lib/inat";
 import type { SpeciesEntry } from "~/lib/types";
-import { putFile } from "~/lib/store";
+import { deleteFile } from "~/lib/store";
 import { slugify } from "~/lib/ids";
 import { photoCap } from "~/lib/cardGeometry";
 import { ReplacePicker } from "~/components/ReplacePicker";
@@ -28,6 +30,7 @@ export function InatPhotoBrowser({
   const [candidates, setCandidates] = useState<PhotoCandidate[]>([]);
   const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<string | null>(null);
+  const [includeAnimated, setIncludeAnimated] = useState(false);
   const query = species.sciName || species.commonName;
 
   const load = useCallback(async () => {
@@ -44,7 +47,10 @@ export function InatPhotoBrowser({
         setStatus(`“${query}” didn't resolve on iNaturalist.`);
         return;
       }
-      const found = await candidatePhotos(taxon.taxonId);
+      const all = await candidatePhotos(taxon.taxonId);
+      const found = includeAnimated
+        ? all
+        : all.filter((c) => !isVideoMedia(c.photo));
       setCandidates(found);
       setPickedIds(new Set());
       setStatus(
@@ -57,7 +63,7 @@ export function InatPhotoBrowser({
     } finally {
       setLoading(false);
     }
-  }, [query, species.taxonId]);
+  }, [query, species.taxonId, includeAnimated]);
 
   useEffect(() => {
     void load();
@@ -68,20 +74,31 @@ export function InatPhotoBrowser({
     async (cand: PhotoCandidate, replaceIndex?: number) => {
       const base = slugify(species.commonName || species.sciName || "photo");
       try {
-        const blob = await downloadPhoto(cand.photo);
+        const fresh = await acquireMediaSlot(cand.photo, cand.obs, {
+          role: "secondary",
+          base,
+          includeAnimated: includeAnimated,
+          projectId,
+        });
+        if (!fresh) {
+          setStatus("This media couldn't be used (download, decode, or animation policy).");
+          return;
+        }
         if (replaceIndex !== undefined) {
-          // Full card: overwrite the picked slot's file and swap the slot,
-          // keeping its role and clearing any crop tuned to the old image.
+          // Full card: swap in the new media at the picked slot, keeping its
+          // role and clearing any crop tuned to the old image.
           const old = species.photos[replaceIndex];
           if (!old) return;
-          await putFile(projectId, old.fileKey, blob);
+          await deleteFile(projectId, old.fileKey);
+          if (old.animation) await deleteFile(projectId, old.animation.fileKey);
           onChange((d) => {
             const slot = d.photos[replaceIndex];
             if (slot) {
-              const fresh = slotFromInatPhoto(cand.photo, cand.obs, slot.role, old.fileKey);
               slot.id = fresh.id;
               slot.credit = fresh.credit;
               slot.alt = fresh.alt;
+              slot.fileKey = fresh.fileKey;
+              slot.animation = fresh.animation;
               slot.crop = undefined;
               slot.focus = undefined;
             }
@@ -90,20 +107,18 @@ export function InatPhotoBrowser({
           setStatus("Photo replaced.");
           return;
         }
-        const index = species.photos.length;
-        const fileKey = `${base}-${index === 0 ? "main" : `secondary-${index}`}.jpg`;
-        await putFile(projectId, fileKey, blob);
         onChange((d) => {
           const role: "main" | "secondary" = d.photos.length === 0 ? "main" : "secondary";
-          d.photos.push(slotFromInatPhoto(cand.photo, cand.obs, role, fileKey));
+          fresh.role = role;
+          d.photos.push(fresh);
         });
         setPickedIds((prev) => new Set(prev).add(String(cand.photo.id)));
-        setStatus("Photo added.");
+        setStatus(fresh.animation ? "Animated media added — pick the frame to display below." : "Photo added.");
       } catch (err) {
-        setStatus(`Could not download photo: ${err instanceof Error ? err.message : err}`);
+        setStatus(`Could not download media: ${err instanceof Error ? err.message : err}`);
       }
     },
-    [species, projectId, onChange],
+    [species, projectId, onChange, includeAnimated],
   );
 
   const autoPick = useCallback(async () => {
@@ -114,25 +129,30 @@ export function InatPhotoBrowser({
       return;
     }
     const picked = pickDistinct(candidates, remaining);
-    let index = species.photos.length;
+    let added = 0;
     for (const cand of picked) {
       const base = slugify(species.commonName || species.sciName || "photo");
-      const fileKey = `${base}-${index === 0 && species.photos.length === 0 ? "main" : `secondary-${index}`}.jpg`;
       try {
-        const blob = await downloadPhoto(cand.photo);
-        await putFile(projectId, fileKey, blob);
-        const role = species.photos.length === 0 && index === 0 ? "main" : "secondary";
+        const slot = await acquireMediaSlot(cand.photo, cand.obs, {
+          role: species.photos.length === 0 ? "main" : "secondary",
+          base,
+          includeAnimated,
+          projectId,
+        });
+        if (!slot) continue;
         onChange((d) => {
-          d.photos.push(slotFromInatPhoto(cand.photo, cand.obs, role, fileKey));
+          const role: "main" | "secondary" = d.photos.length === 0 ? "main" : "secondary";
+          slot.role = role;
+          d.photos.push(slot);
         });
         setPickedIds((prev) => new Set(prev).add(String(cand.photo.id)));
-        index++;
+        added++;
       } catch {
         // Skip failed downloads.
       }
     }
-    setStatus(index ? `Added ${index} photo(s).` : "Could not download any photo.");
-  }, [candidates, species, projectId, onChange]);
+    setStatus(added ? `Added ${added} media item(s).` : "Could not download any media.");
+  }, [candidates, species, projectId, onChange, includeAnimated]);
 
   const cap = photoCap(species.layout);
   const full = species.photos.length >= cap;
@@ -175,9 +195,24 @@ export function InatPhotoBrowser({
         )}
       </div>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-        Creative Commons photos only (the app's policy: no ND, no all-rights-reserved). The
+        Creative Commons media only (the app's policy: no ND, no all-rights-reserved). The
         photographer's credit is attached automatically and exported into the deck.
       </p>
+      <label
+        className="inline-flex items-center gap-2 text-sm mb-3 cursor-pointer"
+        title="Allow animated GIFs and video clips as card media. Cards display a still frame you pick; the clip is stored for playback."
+      >
+        <input
+          type="checkbox"
+          checked={includeAnimated}
+          onChange={(e) => {
+            setIncludeAnimated(e.target.checked);
+            void load();
+          }}
+          data-testid="browser-include-animated"
+        />
+        Include animated GIFs &amp; videos
+      </label>
       {status && (
         <p className="text-sm mb-2" data-testid="inat-browser-status" style={{ color: "var(--muted)" }}>
           {status}

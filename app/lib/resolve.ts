@@ -1,4 +1,5 @@
 import {
+  isVideoMedia,
   autocompleteTaxon,
   taxonDetail,
   observations,
@@ -154,13 +155,15 @@ export function looksLikeSciName(text: string): boolean {
   );
 }
 
-/** Candidate photos for a taxon, CC-licensed, most-voted first.
- *  `excludePhotoIds` (raw iNat photo ids) filters out photos already used by
- *  other cards of the same species, so variant cards show different images. */
+/** Candidate media for a taxon, CC-licensed, most-voted first.
+ *  `excludePhotoIds` (raw iNat photo ids) filters out media already used by
+ *  other cards of the same species, so variant cards show different images.
+ *  Video media is skipped unless `includeVideos` is set. */
 export async function candidatePhotos(
   taxonId: number,
   scope?: { lat: number; lng: number; radiusKm: number } | { placeId: number },
   excludePhotoIds?: Set<string>,
+  { includeVideos = false }: { includeVideos?: boolean } = {},
 ): Promise<PhotoCandidate[]> {
   const results = await observations({
     taxonId,
@@ -175,6 +178,7 @@ export async function candidatePhotos(
   for (const obs of results) {
     for (const photo of obs.photos ?? []) {
       if (!isAllowedLicense(photo.license_code)) continue;
+      if (!includeVideos && isVideoMedia(photo)) continue;
       const key = String(photo.id);
       if (seen.has(key)) continue;
       if (excludePhotoIds?.has(key)) continue;

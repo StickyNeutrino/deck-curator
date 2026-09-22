@@ -33,7 +33,20 @@ export interface InatPhoto {
   license_code: string | null;
   attribution: string;
   url: string;
+  /** e.g. "image/jpeg" or "video/mp4" — null on some endpoints. */
+  file_content_type?: string | null;
   original_dimensions?: { width: number; height: number };
+}
+
+/** iNat serves video media through the same photos array (when present);
+ *  detect it by content type or URL shape. */
+export function isVideoMedia(
+  photo: Pick<InatPhoto, "file_content_type" | "url">,
+): boolean {
+  const ct = (photo.file_content_type ?? "").toLowerCase();
+  if (ct.startsWith("video/")) return true;
+  const url = photo.url ?? "";
+  return url.includes("/videos/") || url.endsWith(".mp4");
 }
 
 export interface InatObservation {

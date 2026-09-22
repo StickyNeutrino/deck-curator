@@ -2,7 +2,7 @@ import type { Route } from "./+types/species";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { getProject, saveProject, getFile, putFile, deleteFile } from "~/lib/store";
-import type { Project, SpeciesEntry, CardLayout } from "~/lib/types";
+import type { Project, SpeciesEntry, CardLayout, PhotoSlot } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
@@ -11,6 +11,8 @@ import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeomet
 import { BORDER_STYLES, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
+import { FrameModal } from "~/components/FrameModal";
+import { classifyMediaBlob, extractGifFrame, extractPosterFrame, isMediaFile } from "~/lib/motion";
 import { ReplacePicker } from "~/components/ReplacePicker";
 
 export function meta({}: Route.MetaArgs) {
@@ -367,6 +369,7 @@ function PhotosEditor({
   const cap = photoCap(species.layout);
   const full = species.photos.length >= cap;
   const [dragOver, setDragOver] = useState<number | null>(null);
+  const [frameSlot, setFrameSlot] = useState<number | null>(null);
   /** Pending uploads waiting for a "replace which photo?" decision. */
   const [pendingReplace, setPendingReplace] = useState<{ files: File[] } | null>(null);
 
@@ -416,10 +419,41 @@ function PhotosEditor({
     let index = species.photos.length;
     for (const file of files) {
       if (index >= cap) break;
-      const slot = await storeUpload(file, index);
-      onChange((d) => {
-        d.photos.push(slot);
-      });
+      const mediaKind = isMediaFile(file);
+      if (!mediaKind) {
+        const slot = await storeUpload(file, index);
+        onChange((d) => {
+          d.photos.push(slot);
+        });
+      } else {
+        // Moving media: store the clip, capture the first frame as the
+        // display still, then let the curator pick a different frame.
+        const base = slugify(species.commonName || species.sciName || "photo");
+        const clipKey = `${base}-anim-${index}-${Date.now().toString(36)}.${mediaKind === "gif" ? "gif" : ".mp4".slice(1)}`;
+        await putFile(projectId, clipKey, file);
+        let still: Blob;
+        try {
+          still =
+            mediaKind === "gif" ? await extractGifFrame(file, 0) : await extractPosterFrame(file, 0.1);
+        } catch (err) {
+          await deleteFile(projectId, clipKey);
+          alert(`Couldn't decode ${file.name}: ${err instanceof Error ? err.message : err}`);
+          continue;
+        }
+        const posterKey = `${base}-frame-${index}-${Date.now().toString(36)}.jpg`;
+        await putFile(projectId, posterKey, still);
+        const slot: PhotoSlot = {
+          id: `upload:${uuid()}`,
+          role: index === 0 ? "main" : "secondary",
+          credit: { observer: "You", license: "all-rights-reserved" },
+          fileKey: posterKey,
+          alt: file.name,
+          animation: { fileKey: clipKey, kind: mediaKind },
+        };
+        onChange((d) => {
+          d.photos.push(slot);
+        });
+      }
       index++;
     }
   };
@@ -478,6 +512,14 @@ function PhotosEditor({
               <span className="absolute top-1 left-1 text-xs rounded bg-white/85 px-1 cursor-grab" title="Drag to rearrange" aria-hidden>
                 ⠿
               </span>
+              {slot.animation && (
+                <span
+                  className="absolute bottom-1 left-1 text-[10px] bg-white/85 rounded px-1"
+                  title={`Animated ${slot.animation.kind} attached`}
+                >
+                  🎬 {slot.animation.kind === "gif" ? "GIF" : "video"}
+                </span>
+              )}
               {slot.crop && (
                 <span className="absolute bottom-1 right-1 text-[10px] bg-white/85 rounded px-1" title="Custom crop set">
                   crop
@@ -492,6 +534,15 @@ function PhotosEditor({
               {slot.role !== "main" && i > 0 && (
                 <button className="text-xs underline" onClick={() => makeMain(slot.id)} data-testid={`make-main-${slot.id}`}>
                   main
+                </button>
+              )}
+              {slot.animation && (
+                <button
+                  className="text-xs underline"
+                  onClick={() => setFrameSlot(i)}
+                  data-testid={`choose-frame-${slot.id}`}
+                >
+                  choose frame
                 </button>
               )}
               <button
@@ -530,7 +581,7 @@ function PhotosEditor({
       <input
         ref={uploadRef}
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         multiple
         className="hidden"
         onChange={(e) => {
@@ -566,6 +617,25 @@ function PhotosEditor({
             void replaceFirstUpload(files, index);
           }}
           onCancel={() => setPendingReplace(null)}
+        />
+      )}
+      {frameSlot != null && species.photos[frameSlot]?.animation && (
+        <FrameModal
+          projectId={projectId}
+          slot={species.photos[frameSlot]}
+          onSave={async (still) => {
+            const slot = species.photos[frameSlot];
+            if (!slot?.animation) return;
+            const base = slugify(species.commonName || species.sciName || "still");
+            const posterKey = `${base}-frame-${Date.now().toString(36)}.jpg`;
+            await putFile(projectId, posterKey, still);
+            await deleteFile(projectId, slot.fileKey);
+            onChange((d) => {
+              const target = d.photos[frameSlot];
+              if (target) target.fileKey = posterKey;
+            });
+          }}
+          onClose={() => setFrameSlot(null)}
         />
       )}
     </div>

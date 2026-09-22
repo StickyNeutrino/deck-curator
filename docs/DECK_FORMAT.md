@@ -60,6 +60,11 @@ pre-rendered JPGs) — they keep working exactly as before.
       "role": "main",                          // "main" | "secondary"
       "alt": "Flowering stalk, close-up",      // optional alt text
       "crop": { "x": 0.1, "y": 0, "w": 0.6, "h": 0.8 },  // optional crop window (0..1) over the source photo; omitted = automatic cover
+      "animation": {                           // optional moving media (animated GIF / video clip)
+        "file": "photos/dwarf-nettle-anim.mp4",// the clip itself, stored alongside
+        "kind": "video",                       // "gif" | "video"
+        "durationSec": 6.2                     // optional
+      },
       "credit": { /* PhotoCredit, below — REQUIRED for every photo */ }
     }
   ],
@@ -112,6 +117,10 @@ Card canvas is a 750×1050 portrait card with background `#e4e3df`:
 - **Front, `photo-single`**: the main photo fills the same slot as the trio's
   main slot (650×604 at 50,48) — identical to a trio with no secondaries.
   A deck that uses only single-photo cards renders like a "one big photo" deck.
+- **Moving media**: when a card uses an animated GIF or video clip, `file`
+  is the *still frame* the curator picked (that's what every renderer
+  displays), and `animation` carries the clip itself for players. Cards never
+  autoplay clips.
 - **Focal point**: photos are cover-cropped to their slot by default.
   `photos[].crop` ({x, y, w, h} normalized 0..1) selects the exact source
   region that fills the slot — pick bounds smaller than the photo in both

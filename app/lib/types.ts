@@ -79,6 +79,10 @@ export interface PhotoSlot {
   crop?: { x: number; y: number; w: number; h: number };
   /** Legacy focal point from earlier exports; superseded by crop. */
   focus?: { x: number; y: number };
+  /** When the media moves (animated GIF or video clip): the stored clip.
+   *  `fileKey` (above) is the still frame the curator picked — that's what
+   *  every renderer displays. */
+  animation?: { fileKey: string; kind: "gif" | "video"; durationSec?: number };
 }
 
 export interface SpeciesEntry {
