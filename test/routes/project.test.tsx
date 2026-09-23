@@ -35,6 +35,12 @@ describe("project route", () => {
     renderProject(project.id);
     await screen.findByTestId("empty-species");
     expect(screen.getByTestId("project-tabs")).toBeInTheDocument();
+    // Deck info leads the tabs — a deck's settings govern its card work.
+    expect(
+      Array.from(screen.getByTestId("project-tabs").querySelectorAll("a")).map((a) =>
+        a.getAttribute("data-testid"),
+      ),
+    ).toEqual(["tab-info", "tab-cards", "tab-review", "tab-export"]);
     // The name/description editor moved to the Deck info tab.
     expect(screen.queryByTestId("deck-label")).not.toBeInTheDocument();
   });
