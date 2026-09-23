@@ -36,9 +36,10 @@ export type LicenseCode = (typeof UPLOAD_LICENSES)[number];
  *  filter is. Saved on the Project so a deck remembers its rules. */
 export interface InatSearchSettings {
   /** Acceptable iNat license codes (subset of INAT_ALLOWED_LICENSES).
-   *  Default: all of them. Excluding NC variants makes a deck sellable. */
+   *  Default: the commercially usable subset (no NC variants) — NC photos
+   *  would stop the deck being sold; individual decks can opt back in. */
   licenses: LicenseCode[];
-  /** Only research-grade observations (community-confirmed ID). */
+  /** Only research-grade observations (community-confirmed ID). Default on. */
   researchGrade: boolean;
   /** Include animated GIFs / video clips as candidate media. */
   includeMedia: boolean;
@@ -47,8 +48,12 @@ export interface InatSearchSettings {
 }
 
 export const DEFAULT_SEARCH_SETTINGS: InatSearchSettings = {
-  licenses: [...INAT_ALLOWED_LICENSES],
-  researchGrade: false,
+  // Commercially distributable photos only: iNat skews NC-heavy (it's the
+  // signup default), so starting from the full list quietly made decks
+  // unsellable. Curators can re-check the NC boxes per deck.
+  licenses: ["cc0", "cc-by", "cc-by-sa"],
+  // Community-confirmed identifications by default.
+  researchGrade: true,
   includeMedia: false,
   orderBy: "license",
 };
