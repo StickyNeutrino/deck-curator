@@ -204,11 +204,12 @@ export async function candidatePhotos(
       out.push({ photo, obs });
     }
   }
-  // Prefer permissive licenses: iNat skews heavily toward CC BY-NC (their
-  // signup default), so without this the vote-ordered results surface NC
-  // variants first even when BY/CC0 photos exist. Stable sort keeps the
-  // vote ordering within each license tier. Opt-out via orderBy: "votes".
-  if ((settings?.orderBy ?? "license") === "votes") return out;
+  // Default ordering is iNat's own vote order (the deck default,
+  // orderBy: "votes"). Decks that opt into "license" get the permissive-first
+  // tiered sort below — iNat skews heavily toward CC BY-NC (their signup
+  // default), so the stable sort puts CC0/BY first while keeping vote order
+  // within each tier.
+  if ((settings?.orderBy ?? "votes") === "votes") return out;
   const rank = (c: PhotoCandidate) => {
     const idx = LICENSE_PREFERENCE.indexOf(
       (c.photo.license_code ?? "").toLowerCase() as (typeof LICENSE_PREFERENCE)[number],

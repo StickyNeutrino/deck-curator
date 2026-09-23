@@ -10,6 +10,10 @@ describe("default iNat search settings", () => {
     expect(DEFAULT_SEARCH_SETTINGS.researchGrade).toBe(true);
   });
 
+  it("defaults photo order to most-voted first", () => {
+    expect(DEFAULT_SEARCH_SETTINGS.orderBy).toBe("votes");
+  });
+
   it("searchSettingsOf fills older/partial projects with the defaults", () => {
     expect(searchSettingsOf({ inatSearch: undefined })).toEqual(DEFAULT_SEARCH_SETTINGS);
     // Saved settings win over defaults — explicit curator choices survive.

@@ -43,7 +43,7 @@ export interface InatSearchSettings {
   researchGrade: boolean;
   /** Include animated GIFs / video clips as candidate media. */
   includeMedia: boolean;
-  /** Photo ordering: permissive-license-first (default) or raw iNat votes. */
+  /** Photo ordering: raw iNat votes (default) or permissive-license-first. */
   orderBy: "license" | "votes";
 }
 
@@ -55,7 +55,10 @@ export const DEFAULT_SEARCH_SETTINGS: InatSearchSettings = {
   // Community-confirmed identifications by default.
   researchGrade: true,
   includeMedia: false,
-  orderBy: "license",
+  // iNat's vote order surfaces the community's best photos first; the
+  // permissive-first tiering is now an opt-in (order matters less since NC
+  // licenses are excluded by default).
+  orderBy: "votes",
 };
 
 /** Fill in any missing fields (older projects, partial JSON). */

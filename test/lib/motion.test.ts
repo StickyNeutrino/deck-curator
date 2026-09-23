@@ -53,7 +53,7 @@ describe("candidatePhotos video filter", () => {
     expect(stills.map((c) => c.photo.id)).toEqual([11]);
   });
 
-  it("orders permissive licenses first, keeping vote order within a tier", async () => {
+  it("orders permissive licenses first when the deck opts in, keeping vote order within a tier", async () => {
     const mod = await import("~/lib/inat");
     vi.spyOn(mod, "observations").mockResolvedValue([
       {
@@ -70,7 +70,13 @@ describe("candidatePhotos video filter", () => {
         ],
       } as never,
     ]);
-    const all = await candidatePhotos(1);
+    // Default (no settings): iNat's own vote order — the permissive-first
+    // tiering is an opt-in now that the default is most-voted.
+    const defaults = await candidatePhotos(1);
+    expect(defaults.map((c) => c.photo.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    const all = await candidatePhotos(1, undefined, undefined, {
+      settings: { licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: false, includeMedia: false, orderBy: "license" },
+    });
     expect(all.map((c) => c.photo.id)).toEqual([4, 3, 5, 1, 6, 2]);
   });
 
