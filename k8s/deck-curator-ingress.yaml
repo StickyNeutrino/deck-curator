@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: deck-curator-ingress
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  rules:
+  - host: deck-curator.unimpossy.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: deck-curator-service
+            port:
+              number: 80
+  tls:
+  - hosts:
+    - deck-curator.unimpossy.com
+    secretName: deck-curator-tls
