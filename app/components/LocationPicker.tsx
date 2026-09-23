@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeckLocation } from "~/lib/types";
 import "leaflet/dist/leaflet.css";
+// Leaflet resolves its default marker icon at runtime by reading a CSS rule
+// from the page, which breaks under bundled production builds — the marker
+// renders as a broken-image box labeled "marker". Import the assets through
+// the bundler instead (Vite inlines them as data URIs, so the icons work
+// regardless of host or base path).
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
 
 /**
  * Location picker: geocoded place search (OpenStreetMap/Nominatim), "use my
@@ -90,6 +98,13 @@ export function LocationPicker({
     void (async () => {
       const L = await import("leaflet");
       if (cancelled || !containerRef.current || mapRef.current) return;
+      // Pin the bundled icon assets before any marker exists (see the import
+      // comment: Leaflet's runtime path detection fails in production builds).
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl: markerIcon2x,
+        iconUrl: markerIcon,
+        shadowUrl: markerShadow,
+      });
       const map = L.map(containerRef.current, { scrollWheelZoom: false }).setView(
         [loc?.lat ?? 32.7157, loc?.lng ?? -117.1611],
         loc?.lat != null ? 10 : 5,
