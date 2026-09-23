@@ -10,6 +10,7 @@ import {
   type InatPhoto,
 } from "./inat";
 import type { PhotoCredit, PhotoSlot } from "./types";
+import { LICENSE_PREFERENCE, INAT_ALLOWED_LICENSES, type InatSearchSettings, type LicenseCode } from "./types";
 
 /**
  * Species resolution against iNaturalist, ported from the Healthy Canyons
@@ -163,8 +164,14 @@ export async function candidatePhotos(
   taxonId: number,
   scope?: { lat: number; lng: number; radiusKm: number } | { placeId: number },
   excludePhotoIds?: Set<string>,
-  { includeVideos = false }: { includeVideos?: boolean } = {},
+  options: {
+    includeVideos?: boolean;
+    /** Deck search settings: licenses, research grade, ordering. */
+    settings?: InatSearchSettings;
+  } = {},
 ): Promise<PhotoCandidate[]> {
+  const { includeVideos = false, settings } = options;
+  const licenses = settings?.licenses;
   const results = await observations({
     taxonId,
     perPage: 24,
@@ -172,13 +179,24 @@ export async function candidatePhotos(
     lng: scope && "lng" in scope ? scope.lng : undefined,
     radius: scope && "lat" in scope ? scope.radiusKm : undefined,
     placeId: scope && "placeId" in scope ? scope.placeId : undefined,
+    qualityGrade: settings?.researchGrade ? "research" : undefined,
+    // Server-side license filter when the deck restricts licenses: fewer
+    // results wasted on photos we'd discard anyway.
+    licenses:
+      licenses && licenses.length < INAT_ALLOWED_LICENSES.length
+        ? licenses.join(",")
+        : undefined,
   });
   const out: PhotoCandidate[] = [];
   const seen = new Set<string>();
   for (const obs of results) {
+    if (settings?.researchGrade && obs.quality_grade !== "research") continue;
     for (const photo of obs.photos ?? []) {
       if (!isAllowedLicense(photo.license_code)) continue;
-      if (!includeVideos && isVideoMedia(photo)) continue;
+      // Belt-and-braces: the API filter should cover this, but cached
+      // responses predate it.
+      if (licenses && !licenses.includes((photo.license_code ?? "").toLowerCase() as LicenseCode)) continue;
+      if (!includeVideos && !settings?.includeMedia && isVideoMedia(photo)) continue;
       const key = String(photo.id);
       if (seen.has(key)) continue;
       if (excludePhotoIds?.has(key)) continue;
@@ -186,7 +204,21 @@ export async function candidatePhotos(
       out.push({ photo, obs });
     }
   }
-  return out;
+  // Prefer permissive licenses: iNat skews heavily toward CC BY-NC (their
+  // signup default), so without this the vote-ordered results surface NC
+  // variants first even when BY/CC0 photos exist. Stable sort keeps the
+  // vote ordering within each license tier. Opt-out via orderBy: "votes".
+  if ((settings?.orderBy ?? "license") === "votes") return out;
+  const rank = (c: PhotoCandidate) => {
+    const idx = LICENSE_PREFERENCE.indexOf(
+      (c.photo.license_code ?? "").toLowerCase() as (typeof LICENSE_PREFERENCE)[number],
+    );
+    return idx === -1 ? LICENSE_PREFERENCE.length : idx;
+  };
+  return out
+    .map((c, i) => ({ c, i, r: rank(c) }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map(({ c }) => c);
 }
 
 /** Download an iNat photo (original, then large/medium) as a Blob. */

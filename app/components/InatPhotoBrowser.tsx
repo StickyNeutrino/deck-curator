@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router";
 import type { PhotoCandidate } from "~/lib/resolve";
 import { candidatePhotos, pickDistinct } from "~/lib/resolve";
 import { acquireMediaSlot } from "~/lib/media";
-import { isVideoMedia } from "~/lib/inat";
-import type { SpeciesEntry } from "~/lib/types";
+import type { InatSearchSettings, SpeciesEntry } from "~/lib/types";
 import { deleteFile } from "~/lib/store";
 import { slugify } from "~/lib/ids";
 import { photoCap } from "~/lib/cardGeometry";
@@ -11,18 +11,22 @@ import { ReplacePicker } from "~/components/ReplacePicker";
 
 /**
  * iNaturalist photo browser for one species: shows CC-licensed observation
- * photos (most-voted first, scoped to the project's locale when known), and
- * lets the curator pin specific photos onto the card — main or secondary.
- * Auto-pick fills the remaining slots with the best distinct-observer set.
+ * photos (scoped to the deck's search settings — licenses, research grade,
+ * ordering — and the project's locale when known), and lets the curator pin
+ * specific photos onto the card — main or secondary. Auto-pick fills the
+ * remaining slots with the best distinct-observer set.
  */
 
 export function InatPhotoBrowser({
   species,
   projectId,
+  settings,
   onChange,
 }: {
   species: SpeciesEntry;
   projectId: string;
+  /** Deck search constraints (from the project); defaults apply when absent. */
+  settings?: InatSearchSettings;
   onChange: (f: (d: SpeciesEntry) => void) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -30,7 +34,6 @@ export function InatPhotoBrowser({
   const [candidates, setCandidates] = useState<PhotoCandidate[]>([]);
   const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<string | null>(null);
-  const [includeAnimated, setIncludeAnimated] = useState(false);
   const query = species.sciName || species.commonName;
 
   const load = useCallback(async () => {
@@ -47,10 +50,11 @@ export function InatPhotoBrowser({
         setStatus(`“${query}” didn't resolve on iNaturalist.`);
         return;
       }
-      const all = await candidatePhotos(taxon.taxonId);
-      const found = includeAnimated
-        ? all
-        : all.filter((c) => !isVideoMedia(c.photo));
+      const all = await candidatePhotos(taxon.taxonId, undefined, undefined, {
+        includeVideos: settings?.includeMedia,
+        settings,
+      });
+      const found = all;
       setCandidates(found);
       setPickedIds(new Set());
       setStatus(
@@ -63,12 +67,12 @@ export function InatPhotoBrowser({
     } finally {
       setLoading(false);
     }
-  }, [query, species.taxonId, includeAnimated]);
+  }, [query, species.taxonId, settings]);
 
   useEffect(() => {
     void load();
-    // Reload when the species identity changes, not on every keystroke.
-  }, [species.taxonId, query]);
+    // Reload when the species identity or search settings change.
+  }, [species.taxonId, query, settings]);
 
   const addPhoto = useCallback(
     async (cand: PhotoCandidate, replaceIndex?: number) => {
@@ -77,7 +81,7 @@ export function InatPhotoBrowser({
         const fresh = await acquireMediaSlot(cand.photo, cand.obs, {
           role: "secondary",
           base,
-          includeAnimated: includeAnimated,
+          includeAnimated: settings?.includeMedia ?? false,
           projectId,
         });
         if (!fresh) {
@@ -118,7 +122,7 @@ export function InatPhotoBrowser({
         setStatus(`Could not download media: ${err instanceof Error ? err.message : err}`);
       }
     },
-    [species, projectId, onChange, includeAnimated],
+    [species, projectId, onChange, settings],
   );
 
   const autoPick = useCallback(async () => {
@@ -136,7 +140,7 @@ export function InatPhotoBrowser({
         const slot = await acquireMediaSlot(cand.photo, cand.obs, {
           role: species.photos.length === 0 ? "main" : "secondary",
           base,
-          includeAnimated,
+          includeAnimated: settings?.includeMedia ?? false,
           projectId,
         });
         if (!slot) continue;
@@ -152,7 +156,7 @@ export function InatPhotoBrowser({
       }
     }
     setStatus(added ? `Added ${added} media item(s).` : "Could not download any media.");
-  }, [candidates, species, projectId, onChange, includeAnimated]);
+  }, [candidates, species, projectId, onChange, settings]);
 
   const cap = photoCap(species.layout);
   const full = species.photos.length >= cap;
@@ -195,24 +199,11 @@ export function InatPhotoBrowser({
         )}
       </div>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-        Creative Commons media only (the app's policy: no ND, no all-rights-reserved). The
-        photographer's credit is attached automatically and exported into the deck.
+        Photos follow the deck's accepted licenses and filters —{" "}
+        <Link to={`/project/${projectId}/info`} className="underline">
+          edit them in Deck info
+        </Link>. The photographer's credit is attached automatically and exported into the deck.
       </p>
-      <label
-        className="inline-flex items-center gap-2 text-sm mb-3 cursor-pointer"
-        title="Allow animated GIFs and video clips as card media. Cards display a still frame you pick; the clip is stored for playback."
-      >
-        <input
-          type="checkbox"
-          checked={includeAnimated}
-          onChange={(e) => {
-            setIncludeAnimated(e.target.checked);
-            void load();
-          }}
-          data-testid="browser-include-animated"
-        />
-        Include animated GIFs &amp; videos
-      </label>
       {status && (
         <p className="text-sm mb-2" data-testid="inat-browser-status" style={{ color: "var(--muted)" }}>
           {status}

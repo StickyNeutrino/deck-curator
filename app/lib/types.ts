@@ -11,7 +11,11 @@ import { uuid } from "./uuid";
 /** iNaturalist license_code vocabulary. ND variants and missing licenses are
  *  rejected for iNat photos (same policy as the Healthy Canyons pipeline);
  *  user uploads may also be "all-rights-reserved". */
-export const INAT_ALLOWED_LICENSES = [
+/** License preference order for iNat photo picking: most permissive first.
+ *  CC0 and plain BY over share-alike, and all of those over NC variants
+ *  (iNat skews NC-heavy, so without explicit preference the restrictive
+ *  licenses dominate top-voted results). */
+export const LICENSE_PREFERENCE = [
   "cc0",
   "cc-by",
   "cc-by-sa",
@@ -19,9 +23,40 @@ export const INAT_ALLOWED_LICENSES = [
   "cc-by-nc-sa",
 ] as const;
 
+/** ND variants and missing licenses are rejected for iNat photos (same
+ *  policy as the Healthy Canyons pipeline). */
+export const INAT_ALLOWED_LICENSES = LICENSE_PREFERENCE;
+
 export const UPLOAD_LICENSES = [...INAT_ALLOWED_LICENSES, "cc-by-nd", "cc-by-nc-nd", "all-rights-reserved"] as const;
 
 export type LicenseCode = (typeof UPLOAD_LICENSES)[number];
+
+/** A deck's iNaturalist search constraints — who can use the finished deck
+ *  drives which licenses are acceptable, and how strict the observations
+ *  filter is. Saved on the Project so a deck remembers its rules. */
+export interface InatSearchSettings {
+  /** Acceptable iNat license codes (subset of INAT_ALLOWED_LICENSES).
+   *  Default: all of them. Excluding NC variants makes a deck sellable. */
+  licenses: LicenseCode[];
+  /** Only research-grade observations (community-confirmed ID). */
+  researchGrade: boolean;
+  /** Include animated GIFs / video clips as candidate media. */
+  includeMedia: boolean;
+  /** Photo ordering: permissive-license-first (default) or raw iNat votes. */
+  orderBy: "license" | "votes";
+}
+
+export const DEFAULT_SEARCH_SETTINGS: InatSearchSettings = {
+  licenses: [...INAT_ALLOWED_LICENSES],
+  researchGrade: false,
+  includeMedia: false,
+  orderBy: "license",
+};
+
+/** Fill in any missing fields (older projects, partial JSON). */
+export function searchSettingsOf(project: Pick<Project, "inatSearch">): InatSearchSettings {
+  return { ...DEFAULT_SEARCH_SETTINGS, ...project.inatSearch };
+}
 
 export type NativeStatus = "native" | "non-native" | "unknown";
 
@@ -131,6 +166,8 @@ export interface Project {
   granularity?: "standard" | "fine";
   categories: ProjectCategory[];
   species: SpeciesEntry[];
+  /** iNaturalist search constraints (licenses, quality grade, media). */
+  inatSearch?: InatSearchSettings;
   createdAt: string;
   updatedAt: string;
 }

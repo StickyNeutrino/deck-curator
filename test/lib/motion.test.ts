@@ -52,4 +52,68 @@ describe("candidatePhotos video filter", () => {
     const stills = await candidatePhotos(1, undefined, undefined, { includeVideos: false });
     expect(stills.map((c) => c.photo.id)).toEqual([11]);
   });
+
+  it("orders permissive licenses first, keeping vote order within a tier", async () => {
+    const mod = await import("~/lib/inat");
+    vi.spyOn(mod, "observations").mockResolvedValue([
+      {
+        id: 1,
+        user: { login: "a" },
+        // Vote order: NC photos are top-voted, permissive ones further down.
+        photos: [
+          { id: 1, license_code: "cc-by-nc", attribution: "", url: "https://x/photos/1/square.jpg", file_content_type: "image/jpeg" },
+          { id: 2, license_code: "cc-by-nc-sa", attribution: "", url: "https://x/photos/2/square.jpg", file_content_type: "image/jpeg" },
+          { id: 3, license_code: "cc-by", attribution: "", url: "https://x/photos/3/square.jpg", file_content_type: "image/jpeg" },
+          { id: 4, license_code: "cc0", attribution: "", url: "https://x/photos/4/square.jpg", file_content_type: "image/jpeg" },
+          { id: 5, license_code: "cc-by-sa", attribution: "", url: "https://x/photos/5/square.jpg", file_content_type: "image/jpeg" },
+          { id: 6, license_code: "cc-by-nc", attribution: "", url: "https://x/photos/6/square.jpg", file_content_type: "image/jpeg" },
+        ],
+      } as never,
+    ]);
+    const all = await candidatePhotos(1);
+    expect(all.map((c) => c.photo.id)).toEqual([4, 3, 5, 1, 6, 2]);
+  });
+
+  it("honors deck search settings: license subset, research grade, vote order", async () => {
+    const mod = await import("~/lib/inat");
+    const spy = vi.spyOn(mod, "observations").mockResolvedValue([
+      {
+        id: 1,
+        quality_grade: "casual",
+        user: { login: "a" },
+        photos: [
+          { id: 1, license_code: "cc-by-nc", attribution: "", url: "https://x/photos/1/square.jpg", file_content_type: "image/jpeg" },
+          { id: 2, license_code: "cc-by", attribution: "", url: "https://x/photos/2/square.jpg", file_content_type: "image/jpeg" },
+        ],
+      },
+      {
+        id: 2,
+        quality_grade: "research",
+        user: { login: "b" },
+        photos: [
+          { id: 3, license_code: "cc0", attribution: "", url: "https://x/photos/3/square.jpg", file_content_type: "image/jpeg" },
+        ],
+      },
+    ] as never);
+
+    // Commercial deck: CC0/BY only. NC photo is dropped, and the server-side
+    // license filter is passed through to the API call.
+    const commercial = await candidatePhotos(1, undefined, undefined, {
+      settings: { licenses: ["cc0", "cc-by"], researchGrade: false, includeMedia: false, orderBy: "license" },
+    });
+    expect(commercial.map((c) => c.photo.id)).toEqual([3, 2]);
+    expect(spy.mock.calls[0][0].licenses).toBe("cc0,cc-by");
+
+    // Research-grade-only deck: casual observations are dropped client-side.
+    const research = await candidatePhotos(1, undefined, undefined, {
+      settings: { licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: true, includeMedia: false, orderBy: "license" },
+    });
+    expect(research.map((c) => c.photo.id)).toEqual([3]);
+
+    // orderBy "votes" skips the permissiveness sort.
+    const voteOrder = await candidatePhotos(1, undefined, undefined, {
+      settings: { licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: false, includeMedia: false, orderBy: "votes" },
+    });
+    expect(voteOrder.map((c) => c.photo.id)).toEqual([1, 2, 3]);
+  });
 });

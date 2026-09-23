@@ -7,11 +7,15 @@ import { ProjectTabs } from "~/components/ProjectTabs";
 import { LocationPicker } from "~/components/LocationPicker";
 import { CategoriesManager } from "~/components/CategoriesManager";
 import { TagsManager } from "~/components/TagsManager";
+import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
+import { searchSettingsOf } from "~/lib/types";
 
 /**
  * Deck info: everything about the deck itself — name, description, its
- * location, category taxonomy, and tags — kept off the card-editing screen
- * so the map and metadata don't crowd the species work.
+ * location, category taxonomy, tags, and the iNaturalist search constraints
+ * (licenses, research grade) that govern photo picking everywhere — kept off
+ * the card-editing screen so the map and metadata don't crowd the species
+ * work.
  */
 
 export function meta({}: Route.MetaArgs) {
@@ -99,6 +103,14 @@ export default function InfoPage() {
             onChange={(loc) => update((d) => { d.location = loc; })}
           />
         </div>
+      </section>
+
+      <section className="mb-6" data-testid="deck-inat-settings">
+        <span className="label">iNaturalist search — licenses and filters for photo picking deck-wide</span>
+        <InatSearchSettingsPanel
+          settings={searchSettingsOf(project)}
+          onChange={(next) => update((d) => { d.inatSearch = next; })}
+        />
       </section>
 
       <CategoriesManager project={project} onChange={update} />

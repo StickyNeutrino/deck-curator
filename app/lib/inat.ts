@@ -172,6 +172,9 @@ export interface ObservationQuery {
   radius?: number;
   placeId?: number;
   qualityGrade?: "research" | "casual" | "any";
+  /** iNat `license` param: "any" (default), "cc", or a comma-separated
+   *  license list like "cc0,cc-by" (server-side filter). */
+  licenses?: string | "any";
   perPage?: number;
   orderBy?: "votes" | "observed_on";
 }
@@ -180,7 +183,7 @@ export async function observations(q: ObservationQuery, signal?: AbortSignal): P
   const json = await inatGet<{ results: InatObservation[] }>("observations", {
     taxon_id: q.taxonId,
     photos: true,
-    license: "any",
+    license: q.licenses ?? "any",
     order_by: q.orderBy ?? "votes",
     per_page: q.perPage ?? 24,
     lat: q.lat,
