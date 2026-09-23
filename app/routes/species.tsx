@@ -1,6 +1,7 @@
 import type { Route } from "./+types/species";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { useMemo } from "react";
 import { getProject, saveProject, getFile, putFile, deleteFile } from "~/lib/store";
 import type { Project, SpeciesEntry, CardLayout, PhotoSlot } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
@@ -8,7 +9,7 @@ import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
 import { uuid } from "~/lib/uuid";
 import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeometry";
-import { BORDER_STYLES, type BorderStyle } from "~/lib/types";
+import { BORDER_STYLES, searchSettingsOf, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { FrameModal } from "~/components/FrameModal";
@@ -26,6 +27,17 @@ export default function SpeciesPage() {
   const [draft, setDraft] = useState<SpeciesEntry | null>(null);
   const [saved, setSaved] = useState(false);
   const [cropSlot, setCropSlot] = useState<{ slot: SpeciesEntry["photos"][number]; index: number } | null>(null);
+
+  // Where "Save & close" / "Cancel" should return to — e.g. the review page
+  // with the "needs fixing" filter active. Falls back to the deck list.
+  const location = useLocation();
+  const returnTo = useMemo(() => {
+    const raw = new URLSearchParams(location.search).get("returnTo");
+    if (!raw) return null;
+    // Only allow relative project paths (no open redirects).
+    return raw.startsWith("review") ? `/project/${projectId}/${raw}` : null;
+  }, [location.search, projectId]);
+  const closeTarget = returnTo ?? `/project/${projectId}`;
 
   useEffect(() => {
     if (!projectId) return;
@@ -67,14 +79,14 @@ export default function SpeciesPage() {
 
   if (!project) {
     return (
-      <Shell backLabel="Back" backTo="/">
+      <Shell backLabel="Back" backTo={closeTarget}>
         <p>Loading…</p>
       </Shell>
     );
   }
   if (!entry || !draft) {
     return (
-      <Shell backLabel="Back to deck" backTo={`/project/${projectId ?? ""}`}>
+      <Shell backLabel="Back to deck" backTo={closeTarget}>
         <p>Species not found.</p>
       </Shell>
     );
@@ -83,7 +95,7 @@ export default function SpeciesPage() {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <nav className="mb-4 text-sm">
-        <Link to={`/project/${projectId}`} className="underline" style={{ color: "var(--muted)" }}>
+        <Link to={closeTarget} className="underline" style={{ color: "var(--muted)" }}>
           ← {project.deckLabel}
         </Link>
       </nav>
@@ -112,12 +124,12 @@ export default function SpeciesPage() {
             <button
               className="btn-secondary"
               onClick={() => {
-                void persist().then(() => navigate(`/project/${projectId}`));
+                void persist().then(() => navigate(closeTarget));
               }}
             >
               Save &amp; close
             </button>
-            <button className="btn-secondary" onClick={() => navigate(`/project/${projectId}`)}>
+            <button className="btn-secondary" onClick={() => navigate(closeTarget)}>
               Cancel
             </button>
           </div>
@@ -134,7 +146,7 @@ export default function SpeciesPage() {
         </aside>
       </div>
 
-      <InatPhotoBrowser species={draft} projectId={projectId ?? ""} onChange={update} />
+      <InatPhotoBrowser species={draft} projectId={projectId ?? ""} settings={project ? searchSettingsOf(project) : undefined} onChange={update} />
       {cropSlot && (
         <CropModal
           projectId={projectId ?? ""}

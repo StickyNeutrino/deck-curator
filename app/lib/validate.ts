@@ -10,6 +10,8 @@ export interface ExportIssue {
   severity: "error" | "warning" | "info";
   message: string;
   species?: string;
+  /** id of the affected species, when the issue is card-specific */
+  speciesId?: string;
 }
 
 export function validateProject(project: Project): ExportIssue[] {
@@ -35,11 +37,12 @@ export function validateProject(project: Project): ExportIssue[] {
       issues.push({ severity: "error", message: "A species has neither a common nor a scientific name.", species: s.id });
     }
     if (!s.photos.length) {
-      issues.push({ severity: "warning", message: `${label}: card has no photos yet.` });
+      issues.push({ severity: "warning", message: `${label}: card has no photos yet.`, speciesId: s.id });
     } else if (s.layout === "photo-trio" && s.photos.length < 3) {
       issues.push({
         severity: "warning",
         message: `${label}: trio layout with ${s.photos.length} photo(s) — empty slots render as blank space.`,
+        speciesId: s.id,
       });
     }
     for (const p of s.photos) {
@@ -48,14 +51,15 @@ export function validateProject(project: Project): ExportIssue[] {
           severity: "warning",
           message: `${label}: photo credit is a placeholder (“${p.credit.observer}”) — set the real photographer name before sharing.`,
           species: label,
+          speciesId: s.id,
         });
       }
       if (!p.credit.license) {
-        issues.push({ severity: "error", message: `${label}: a photo has no license — every photo needs one for the credits page.`, species: label });
+        issues.push({ severity: "error", message: `${label}: a photo has no license — every photo needs one for the credits page.`, species: label, speciesId: s.id });
       }
     }
     if (!s.category || !project.categories.some((c) => c.id === s.category)) {
-      issues.push({ severity: "error", message: `${label}: not assigned to a category.`, species: label });
+      issues.push({ severity: "error", message: `${label}: not assigned to a category.`, species: label, speciesId: s.id });
     }
   }
   if (!project.species.length) {

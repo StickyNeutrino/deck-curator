@@ -1,8 +1,9 @@
 import type { Route } from "./+types/review";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { getProject, listFiles, saveProject } from "~/lib/store";
 import type { Project, SpeciesEntry } from "~/lib/types";
+import { validateProject } from "~/lib/validate";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { allTags } from "~/components/TagsManager";
 import { ProjectTabs } from "~/components/ProjectTabs";
@@ -22,8 +23,24 @@ export default function ReviewPage() {
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [blobMap, setBlobMap] = useState<Map<string, Blob>>(new Map());
-  const [filter, setFilter] = useState<"all" | "flagged" | "tag">("all");
+  const [filter, setFilter] = useState<"all" | "flagged" | "issues" | "tag">("all");
   const [tagFilter, setTagFilter] = useState<string>("");
+
+  // Restore the active filter when coming back from the editor via ?filter=.
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const urlFilter = params.get("filter");
+  const urlTag = params.get("tag") ?? "";
+  useEffect(() => {
+    if (urlFilter === "flagged" || urlFilter === "issues") {
+      setFilter(urlFilter);
+    } else if (urlFilter === "tag" && urlTag) {
+      setTagFilter(urlTag);
+      setFilter("tag");
+    }
+    // Run once per mount (i.e. once per navigation back from the editor).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -54,10 +71,22 @@ export default function ReviewPage() {
 
   // All hooks run on every render — the early return below must not change
   // the hook count (that crashed the page whenever the project loaded late).
+  // Whole-deck validation (missing photos, credits, licenses…) — the same
+  // report the export page shows, so problems can be fixed before exporting.
+  const issues = useMemo(() => (project ? validateProject(project) : []), [project]);
+  const issueCountBySpecies = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const issue of issues) {
+      if (issue.speciesId) counts.set(issue.speciesId, (counts.get(issue.speciesId) ?? 0) + 1);
+    }
+    return counts;
+  }, [issues]);
+
   const grouped = useMemo(() => {
     if (!project) return [];
     const matches = (s: SpeciesEntry): boolean => {
       if (filter === "flagged") return Boolean(s.needsReview);
+      if (filter === "issues") return issueCountBySpecies.has(s.id);
       if (filter === "tag") return (s.tags ?? []).includes(tagFilter);
       return true;
     };
@@ -67,9 +96,29 @@ export default function ReviewPage() {
         species: project.species.filter((s) => s.category === category.id && matches(s)),
       }))
       .filter((group) => group.species.length > 0);
-  }, [project, filter, tagFilter]);
+  }, [project, filter, tagFilter, issueCountBySpecies]);
 
   const flaggedCount = project?.species.filter((s) => s.needsReview).length ?? 0;
+  const issueCards = issueCountBySpecies.size;
+
+  // Where the editor should send the user back to: the review page with the
+  // current filter intact, or the deck list when arriving from elsewhere.
+  const reviewReturnTo = useMemo(
+    () =>
+      filter === "all"
+        ? undefined
+        : filter === "tag"
+          ? `review?filter=tag&tag=${encodeURIComponent(tagFilter)}`
+          : `review?filter=${filter}`,
+    [filter, tagFilter],
+  );
+  const speciesEditUrl = useCallback(
+    (speciesId: string) => {
+      const back = reviewReturnTo ? `?returnTo=${encodeURIComponent(reviewReturnTo)}` : "";
+      return `/project/${projectId}/species/${speciesId}${back}`;
+    },
+    [projectId, reviewReturnTo],
+  );
   const totalCount = project?.species.length ?? 0;
   const tags = useMemo(() => (project ? allTags(project) : []), [project]);
 
@@ -80,7 +129,8 @@ export default function ReviewPage() {
         <h1 className="text-2xl font-bold">{project?.deckLabel ?? "Loading…"}</h1>
         <p className="text-sm mt-1" style={{ color: "var(--muted)" }} data-testid="review-summary">
           {totalCount} cards — front above, back below. Click a card to edit it; flag
-          cards that need another pass with the ⚑ button.
+          cards that need another pass with the ⚑ button, and use ⚠ Needs fixing to
+          find cards with missing photos, credits, or licenses.
         </p>
         <div className="flex flex-wrap items-center gap-2 mt-3" data-testid="review-filters">
           <button
@@ -89,6 +139,14 @@ export default function ReviewPage() {
             data-testid="filter-all"
           >
             All ({totalCount})
+          </button>
+          <button
+            className={`btn text-sm ${filter === "issues" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setFilter("issues")}
+            data-testid="filter-issues"
+            title="Cards with missing photos, credits, licenses, or categories"
+          >
+            ⚠ Needs fixing ({issueCards})
           </button>
           <button
             className={`btn text-sm ${filter === "flagged" ? "btn-primary" : "btn-secondary"}`}
@@ -145,7 +203,7 @@ export default function ReviewPage() {
                   </button>
                   <button
                     className="block w-full text-left cursor-zoom-in"
-                    onClick={() => navigate(`/project/${projectId}/species/${s.id}`)}
+                    onClick={() => navigate(speciesEditUrl(s.id))}
                     title="Edit this card"
                     data-testid={`edit-card-${s.id}`}
                   >
@@ -161,6 +219,20 @@ export default function ReviewPage() {
                     <span className="ml-1 font-semibold" style={{ color: "var(--accent)" }}>
                       ⚑ needs review
                     </span>
+                  )}
+                  {issueCountBySpecies.has(s.id) && (
+                    <button
+                      className="ml-1 font-semibold cursor-pointer underline"
+                      style={{ color: "var(--danger)" }}
+                      onClick={() => navigate(speciesEditUrl(s.id))}
+                      title={issues
+                        .filter((i) => i.speciesId === s.id)
+                        .map((i) => i.message)
+                        .join("\n")}
+                      data-testid={`issues-${s.id}`}
+                    >
+                      ⚠ {issueCountBySpecies.get(s.id)} issue{issueCountBySpecies.get(s.id)! > 1 ? "s" : ""}
+                    </button>
                   )}
                 </figcaption>
               </figure>
