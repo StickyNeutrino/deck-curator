@@ -96,4 +96,18 @@ describe("project store", () => {
     // Other projects' files are untouched.
     expect((await getFile("other", "keep.jpg"))!.size).toBe(9);
   });
+
+  it("refuses to rename onto an id another deck already uses", async () => {
+    const a = newProject("Alpha");
+    const b = newProject("Beta");
+    await saveProject(a);
+    await saveProject(b);
+    await putFile(a.id, "x.jpg", new Blob(["x"]));
+
+    await expect(renameProject(a.id, { ...structuredClone(a), id: b.id })).rejects.toThrow(/already uses/);
+    // Nothing moved: both records and files are intact.
+    expect(await getProject(a.id)).toBeDefined();
+    expect(await getProject(b.id)).toBeDefined();
+    expect(await getFile(a.id, "x.jpg")).toBeDefined();
+  });
 });

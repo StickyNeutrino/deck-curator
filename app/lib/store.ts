@@ -83,6 +83,14 @@ export async function renameProject(oldId: string, next: Project): Promise<void>
   const tx = database.transaction(["projects", "files"], "readwrite");
   const projects = tx.objectStore("projects");
   const files = tx.objectStore("files");
+  // Enforce uniqueness INSIDE the transaction — a concurrent tab (or a
+  // stale caller check) could have created the target id meanwhile, and a
+  // bare put would overwrite that deck.
+  const clash = await projects.get(next.id);
+  if (clash != null) {
+    tx.abort();
+    throw new Error(`Another deck already uses the id “${next.id}”.`);
+  }
   const keys = (await files.getAllKeys()) as string[];
   const moving = keys.filter((k) => k.startsWith(`${oldId}/`));
   const buffers = (await Promise.all(moving.map((k) => files.get(k)))) as Array<ArrayBuffer | undefined>;
