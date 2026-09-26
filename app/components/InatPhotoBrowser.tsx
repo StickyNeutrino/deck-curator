@@ -38,7 +38,10 @@ export function InatPhotoBrowser({
   const [status, setStatus] = useState<string | null>(null);
   const query = species.sciName || species.commonName;
 
-  const load = useCallback(async () => {
+  /** Reload the candidate list. `isCurrent` lets a superseded run (species or
+   *  settings changed again while this one was in flight) drop its results
+   *  instead of overwriting the newer state. */
+  const load = useCallback(async (isCurrent: () => boolean = () => true) => {
     if (!query) return;
     setLoading(true);
     setStatus(null);
@@ -47,6 +50,7 @@ export function InatPhotoBrowser({
       const taxon = species.taxonId
         ? { taxonId: species.taxonId }
         : await resolveTaxon(query).then((t) => (t ? { taxonId: t.taxonId } : null));
+      if (!isCurrent()) return;
       if (!taxon) {
         setCandidates([]);
         setStatus(`“${query}” didn't resolve on iNaturalist.`);
@@ -56,6 +60,7 @@ export function InatPhotoBrowser({
         includeVideos: settings?.includeMedia,
         settings,
       });
+      if (!isCurrent()) return;
       const found = all;
       setCandidates(found);
       setPickedIds(new Set());
@@ -65,16 +70,21 @@ export function InatPhotoBrowser({
           : "No CC-licensed photos found for this species.",
       );
     } catch (err) {
+      if (!isCurrent()) return;
       setStatus(`iNaturalist error: ${err instanceof Error ? err.message : err}`);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [query, species.taxonId, settings]);
 
   useEffect(() => {
-    void load();
-    // Reload when the species identity or search settings change.
-  }, [species.taxonId, query, settings]);
+    // Reload when the species identity or search settings change; the
+    // cancellation flag stops a slower older response from clobbering a
+    // newer one's results.
+    let cancelled = false;
+    void load(() => !cancelled);
+    return () => { cancelled = true; };
+  }, [species.taxonId, query, settings, load]);
 
   const addPhoto = useCallback(
     async (cand: PhotoCandidate, replaceIndex?: number) => {
