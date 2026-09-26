@@ -265,11 +265,16 @@ function VersionHistory({
 
   const saveVersion = async () => {
     setBusy("save");
-    await commitDeckVersion(project, undefined, message.trim() || undefined);
-    setMessage("");
-    await refresh();
-    setBusy(null);
-    setStatus("Version saved.");
+    try {
+      const oid = await commitDeckVersion(project, undefined, message.trim() || undefined, { silent: false });
+      setMessage("");
+      await refresh();
+      setStatus(oid ? "Version saved." : "No changes since the last version — nothing to save.");
+    } catch (err) {
+      setStatus(`Saving the version failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy(null);
+    }
   };
 
   const restore = async (oid: string) => {

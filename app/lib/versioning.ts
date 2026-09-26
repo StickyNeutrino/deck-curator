@@ -1,4 +1,5 @@
 import type { Project } from "./types";
+import { migrateProject } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
 import { getFile, putFile, deleteFile } from "./store";
@@ -66,10 +67,10 @@ export async function renameRepo(oldId: string, newId: string): Promise<void> {
   await copyDir(from, to);
   await removeDir(from);
   const oldPrefix = `${oldId}/`;
-  for (const [key, size] of [...writtenSizes]) {
+  for (const [key, content] of [...writtenFingerprints]) {
     if (key.startsWith(oldPrefix)) {
-      writtenSizes.set(`${newId}/${key.slice(oldPrefix.length)}`, size);
-      writtenSizes.delete(key);
+      writtenFingerprints.set(`${newId}/${key.slice(oldPrefix.length)}`, content);
+      writtenFingerprints.delete(key);
     }
   }
   const fingerprint = lastFingerprints.get(oldId);
@@ -90,8 +91,25 @@ async function removeDir(path: string): Promise<void> {
   await fs.promises.rmdir(path);
 }
 
-/** Track photo sizes so unchanged blobs aren't rewritten every commit. */
-const writtenSizes = new Map<string, number>();
+/** Track committed photo content so unchanged blobs aren't rewritten every
+ *  commit. Values are content fingerprints — size alone can't tell a
+ *  replaced photo (same fileKey, same byte length, different image) from an
+ *  unchanged one. */
+const writtenFingerprints = new Map<string, string>();
+
+/** Cheap content fingerprint: FNV-1a and djb2 over the bytes (64 bits of
+ *  mixing, no collision-prone size shortcut). */
+async function contentFingerprint(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blobToArrayBuffer(blob));
+  let h1 = 0x811c9dc5; // FNV-1a 32-bit
+  let h2 = 5381; // djb2
+  for (let i = 0; i < bytes.length; i++) {
+    h1 = (h1 ^ bytes[i]) >>> 0;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 = (Math.imul(h2, 33) + bytes[i]) >>> 0;
+  }
+  return `${h1.toString(16)}${h2.toString(16)}-${bytes.length}`;
+}
 
 function fingerprint(project: Project): string {
   // updatedAt changes on every save (including no-op ones), so exclude it:
@@ -130,19 +148,35 @@ export async function ensureRepo(project: Project, files?: Map<string, Blob>): P
 }
 
 /** Commit the current project state. `files` are photo blobs if already at
- *  hand (the caller usually has them); missing ones are read from the store. */
+ *  hand (the caller usually has them); missing ones are read from the store.
+ *  Returns the new commit's oid, or null when there was nothing to commit.
+ *  With `silent` (the default) failures are swallowed — versioning must
+ *  never block editing; pass `silent: false` for user-initiated saves that
+ *  need honest error reporting. */
 export async function commitDeckVersion(
   project: Project,
   files?: Map<string, Blob>,
   message?: string,
+  { silent = true }: { silent?: boolean } = {},
 ): Promise<string | null> {
   try {
     const fp = fingerprint(project);
     if (lastFingerprints.get(project.id) === fp && !message) {
       return null; // nothing new since the last commit
     }
+    if (!lastFingerprints.has(project.id) && !message) {
+      // A fresh session starts with an empty in-memory fingerprint map —
+      // seed it from the repo so "first autosave after reload" doesn't
+      // commit byte-identical state. (Named versions always commit.)
+      const headFp = await headProjectFingerprint(project.id);
+      if (headFp !== null) {
+        lastFingerprints.set(project.id, headFp);
+        if (headFp === fp) return null;
+      }
+    }
     return await commitAll(project, files, message ?? defaultCommitMessage(project));
   } catch (err) {
+    if (!silent) throw err;
     console.warn("Version commit failed (continuing without history):", err);
     return null;
   }
@@ -190,10 +224,10 @@ async function commitAll(
       let blob = files?.get(photo.fileKey);
       if (!blob) blob = await getFile(project.id, photo.fileKey);
       if (!blob) continue;
-      const size = blob.size;
-      if (!force && writtenSizes.get(key) === size) continue; // unchanged photo
+      const content = await contentFingerprint(blob);
+      if (!force && writtenFingerprints.get(key) === content) continue; // unchanged photo
       await writeFile(`photos/${photo.fileKey}`, new Uint8Array(await blobToArrayBuffer(blob)));
-      writtenSizes.set(key, size);
+      writtenFingerprints.set(key, content);
     }
   }
 
@@ -230,8 +264,11 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
   }
 }
 
-/** Restore a version: reads the commit's project + photos back into the
- *  live stores. The caller saves them and re-renders. */
+/** Restore a version: reads the commit's project + photos straight out of
+ *  the object store and swaps them into the live stores. The working tree
+ *  and HEAD are never touched — the caller saves the returned project and
+ *  commits it as a normal commit on top, so every version stays reachable
+ *  (checking out would have detached HEAD and orphaned newer commits). */
 export async function restoreVersion(
   projectId: string,
   oid: string,
@@ -239,33 +276,62 @@ export async function restoreVersion(
   const fs = await getFs();
   const git = await getGit();
   const dir = dirFor(projectId);
-  await git.checkout({ fs, dir, ref: oid, force: true });
-  const json = await fs.promises.readFile(`${dir}/${PROJECT_FILE}`, "utf8");
-  const project = JSON.parse(json as string) as Project;
 
-  // Replace the live photo store with the restored version's photos: import
-  // the commit's photos and delete any current photos the version lacks.
-  const collectKeys = new Set<string>();
-  for (const s of project.species) for (const p of s.photos) collectKeys.add(p.fileKey);
-  const { listFiles } = await import("./store");
-  for (const [key] of await listFiles(projectId)) {
-    if (!collectKeys.has(key)) await deleteFile(projectId, key);
-  }
-  for (const key of collectKeys) {
-    try {
-      const data = (await fs.promises.readFile(`${dir}/photos/${key}`)) as Uint8Array;
-      await putFile(projectId, key, new Blob([data as BlobPart], { type: "image/jpeg" }));
-    } catch {
-      // A photo missing from that version simply stays missing.
+  const { blob: projectJson } = await git.readBlob({ fs, dir, oid, filepath: PROJECT_FILE });
+  const project = migrateProject(
+    JSON.parse(new TextDecoder().decode(projectJson)) as Project,
+  );
+
+  // The commit's photo blobs, keyed by their in-project fileKey.
+  const photoBlobs = new Map<string, Uint8Array>();
+  try {
+    const { tree } = await git.readTree({ fs, dir, oid, filepath: "photos" });
+    for (const entry of tree) {
+      if (entry.type !== "blob") continue;
+      try {
+        photoBlobs.set(entry.path, (await git.readBlob({ fs, dir, oid: entry.oid })).blob);
+      } catch {
+        // A corrupt/missing object shouldn't fail the whole restore.
+      }
     }
+  } catch {
+    // No photos/ tree — a version before photos existed, or an empty deck.
   }
 
-  // The next autosave commits the restore (history keeps the full trail).
-  for (const [mapKey] of [...writtenSizes]) {
-    if (mapKey.startsWith(`${projectId}/`)) writtenSizes.delete(mapKey);
+  // Import the restored blobs BEFORE dropping anything: if this fails
+  // partway, the live store still holds its previous contents.
+  for (const [key, data] of photoBlobs) {
+    await putFile(projectId, key, new Blob([data as BlobPart], { type: "image/jpeg" }));
+  }
+  const kept = new Set<string>();
+  for (const s of project.species) for (const p of s.photos) kept.add(p.fileKey);
+  const { listFileKeys } = await import("./store");
+  for (const key of await listFileKeys(projectId)) {
+    if (!kept.has(key)) await deleteFile(projectId, key);
+  }
+
+  // Force the next commit to rewrite the manifest and photos (history keeps
+  // the full trail as a normal commit on HEAD).
+  for (const [mapKey] of [...writtenFingerprints]) {
+    if (mapKey.startsWith(`${projectId}/`)) writtenFingerprints.delete(mapKey);
   }
   lastFingerprints.delete(projectId);
   return { project };
+}
+
+/** Fingerprint of the project state at the repo's HEAD commit — null when
+ *  there is no history. Used to seed the in-memory fingerprint map. */
+async function headProjectFingerprint(projectId: string): Promise<string | null> {
+  try {
+    const fs = await getFs();
+    const git = await getGit();
+    const dir = dirFor(projectId);
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    const { blob } = await git.readBlob({ fs, dir, oid: head, filepath: PROJECT_FILE });
+    return fingerprint(JSON.parse(new TextDecoder().decode(blob)) as Project);
+  } catch {
+    return null; // no commits yet, or unreadable history
+  }
 }
 
 /** Export the git directory itself so the zip doubles as a real git repo. */

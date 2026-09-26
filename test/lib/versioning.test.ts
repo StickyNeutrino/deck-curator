@@ -56,6 +56,45 @@ describe("git versioning", () => {
     expect(await getFile(project.id, "oak-main.jpg")).toBeInstanceOf(Blob);
   }, 60000);
 
+  it("restore keeps newer versions reachable and swaps photo bytes back", async () => {
+    const project = sample();
+    await saveProject(project);
+    await ensureRepo(project); // v1: no photos
+
+    // v2: add a photo.
+    const entry = project.species[0];
+    entry.photos.push({
+      id: "upload:x",
+      role: "main",
+      credit: { observer: "A", license: "cc0" },
+      fileKey: "oak-main.jpg",
+    });
+    await putFile(project.id, "oak-main.jpg", new Blob(["jpeg-v2"]));
+    await saveProject(project);
+    await commitDeckVersion(project, undefined, "add photo");
+    const withPhoto = (await listVersions(project.id)).find((v) => v.message === "add photo")!;
+
+    // v3: replace the photo with different bytes of the same length — a
+    // size-only change detector would have left the old bytes in git.
+    await putFile(project.id, "oak-main.jpg", new Blob(["jpeg-v3"]));
+    await saveProject(project);
+    await commitDeckVersion(project, undefined, "swap bytes");
+
+    // Restore v2: the photo bytes must revert too (same size, different image).
+    const restored = await restoreVersion(project.id, withPhoto.oid);
+    const blob = await getFile(project.id, "oak-main.jpg");
+    expect(new TextDecoder().decode(await blobToArrayBuffer(blob!))).toBe("jpeg-v2");
+
+    // Committing the restore lands on HEAD: nothing is orphaned.
+    await saveProject(restored!.project);
+    const oid = await commitDeckVersion(restored!.project, undefined, "Restored version");
+    expect(oid).not.toBeNull();
+    const messages = (await listVersions(project.id)).map((v) => v.message);
+    expect(messages[0]).toBe("Restored version");
+    expect(messages).toContain("swap bytes");
+    expect(messages).toContain("add photo");
+  }, 60000);
+
   it("export includes the git dir so the zip is a real repository", async () => {
     const project = sample();
     await saveProject(project);
