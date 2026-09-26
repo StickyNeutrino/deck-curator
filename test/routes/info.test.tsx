@@ -7,6 +7,18 @@ import { getProject, saveProject } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 
+// Stub the batched iconic-taxon lookup (network-free) for the granularity
+// re-sort test; hoisted to the top level as vi.mock requires.
+vi.mock("~/lib/inat", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("~/lib/inat")>();
+  return {
+    ...mod,
+    inatGet: vi.fn(async (_e: string, params: Record<string, unknown>) => ({
+      results: [{ id: 1, iconic_taxon_id: 3 }],
+    })),
+  };
+});
+
 function renderInfo(id: string) {
   return render(
     <MemoryRouter initialEntries={[`/project/${id}/info`]}>
@@ -73,17 +85,7 @@ describe("deck info page", () => {
     loaded.species.push(bird);
     await saveProject(loaded);
 
-    // Stub the batched iconic-taxon lookup (network-free).
-    vi.mock("~/lib/inat", async (importOriginal) => {
-      const mod = await importOriginal<typeof import("~/lib/inat")>();
-      return {
-        ...mod,
-        inatGet: vi.fn(async (_e: string, params: Record<string, unknown>) => ({
-          results: [{ id: 1, iconic_taxon_id: 3 }],
-        })),
-      };
-    });
-
+    // The hoisted top-level mock stubs the iconic-taxon lookup.
     renderInfo(project.id);
     await screen.findByTestId("deck-label");
     await user.selectOptions(await screen.findByTestId("granularity-select"), "fine");

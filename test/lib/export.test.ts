@@ -201,4 +201,18 @@ describe("variant card naming", () => {
     expect(manifest.categories[0].cards[0].commonName).toBe("Dudleya edulis");
     expect(manifest.categories[0].cards[2].commonName).toBe("Dudleya edulis");
   });
+
+  it("avoids colliding with a card literally named 'Oak (2)'", () => {
+    const project = newProject("Collision");
+    const literal = makeSpecies({ commonName: "Oak (2)", sciName: "Quercus", category: "plants" });
+    const a = makeSpecies({ commonName: "Oak", sciName: "Quercus x", category: "plants" });
+    const b = makeSpecies({ commonName: "Oak", sciName: "Quercus y", category: "plants" });
+    project.species.push(literal, a, b);
+
+    const names = [...cardExportNames(project).values()];
+    // Uniqueness is the manifest's contract — no two cards may share a name.
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain("Oak (2)");
+    expect(names).toContain("Oak (3)");
+  });
 });

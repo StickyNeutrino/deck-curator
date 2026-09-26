@@ -198,7 +198,7 @@ export default function SpeciesPage() {
         <CropModal
           projectId={projectId ?? ""}
           fileKey={cropSlot.slot.fileKey}
-          slotAspect={slotAspectFor(cropSlot.slot.role, cropSlot.index)}
+          slotAspect={slotAspectFor(cropSlot.slot.role, cropSlot.index, draft.photos.length)}
           initialCrop={cropSlot.slot.crop}
           onSave={(crop) => update((d) => {
             const slot = d.photos[cropSlot.index];

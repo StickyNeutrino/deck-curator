@@ -237,8 +237,15 @@ function cropClipPath(crop: CropRect): string {
   return `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${l}% ${t}%, ${l}% ${b}%, ${r}% ${b}%, ${r}% ${t}%, ${l}% ${t}%)`;
 }
 
-/** Aspect (w/h) of the slot a photo sits in — used to pre-select the crop. */
-export function slotAspectFor(role: "main" | "secondary", index: number): number {
+/** Aspect (w/h) of the slot a photo sits in — used to pre-select the crop.
+ *  A lone secondary sits in the wider right slot (three-photo cards put the
+ *  first secondary on the left), so the count decides the geometry. */
+export function slotAspectFor(
+  role: "main" | "secondary",
+  index: number,
+  photoCount: number,
+): number {
   if (role === "main") return 650 / 604;
+  if (photoCount < 3) return 324 / 295;
   return index === 1 ? 276 / 295 : 324 / 295;
 }

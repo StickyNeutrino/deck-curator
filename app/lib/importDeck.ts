@@ -18,6 +18,7 @@ interface ManifestPhoto {
   alt?: string;
   crop?: { x: number; y: number; w: number; h: number };
   focus?: { x: number; y: number };
+  animation?: { file: string; kind: string; durationSec?: number };
   credit?: {
     observer?: string;
     license?: string;
@@ -89,6 +90,15 @@ export function speciesFromManifest(manifest: Manifest): {
         };
         if (photo.crop) slot.crop = { ...photo.crop };
         else if (photo.focus) slot.focus = { ...photo.focus };
+        // The clip rides along; the archive importer resolves its fileKey
+        // when it stores the bytes (the marker form keeps it findable).
+        if (photo.animation?.file) {
+          slot.animation = {
+            fileKey: `import:${photo.animation.file}`,
+            kind: photo.animation.kind === "gif" ? "gif" : "video",
+            durationSec: photo.animation.durationSec,
+          };
+        }
         return slot;
       });
       // Variant cards export names like "Name (2)"; the clean species name is
@@ -192,6 +202,21 @@ export async function importDeckArchive(
       slot.fileKey = fileKey;
       if (raw) {
         await putFile(project.id, fileKey, new Blob([raw as BlobPart], { type: mimeForFileKey(fileKey) }));
+      }
+      // The slot's animation clip: store its bytes too (import/export are
+      // symmetric — the manifest carries `animation`), or the re-imported
+      // deck silently loses every clip.
+      if (slot.animation) {
+        const animManifest = slot.animation.fileKey.slice("import:".length);
+        const animRaw = entries[animManifest] ?? entries[decode(animManifest)];
+        const animBase = animManifest.split("/").pop() ?? "clip.mp4";
+        let animKey = animBase;
+        for (let i = 2; usedFileKeys.has(animKey); i++) animKey = `${i}-${animBase}`;
+        usedFileKeys.add(animKey);
+        if (animRaw) {
+          await putFile(project.id, animKey, new Blob([animRaw as BlobPart], { type: mimeForFileKey(animKey) }));
+        }
+        slot.animation.fileKey = animKey;
       }
     }
     project.species.push(entry);

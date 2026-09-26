@@ -57,13 +57,23 @@ export function buildManifest(project: Project): object {
  */
 export function cardExportNames(project: Project): Map<string, string> {
   const seen = new Map<string, number>();
+  const used = new Set<string>();
   const names = new Map<string, string>();
   for (const s of project.species) {
     const base = (s.commonName || s.sciName || "Card").trim();
     const key = base.toLowerCase();
     const n = seen.get(key) ?? 0;
     seen.set(key, n + 1);
-    names.set(s.id, n === 0 ? base : `${base} (${n + 1})`);
+    let name = n === 0 ? base : `${base} (${n + 1})`;
+    // A literal "Oak (2)" card can collide with the generated suffix;
+    // deck-wide uniqueness is the manifest's contract, so keep incrementing.
+    while (used.has(name.toLowerCase())) {
+      const next = (seen.get(key) ?? 1) + 1;
+      seen.set(key, next);
+      name = `${base} (${next})`;
+    }
+    used.add(name.toLowerCase());
+    names.set(s.id, name);
   }
   return names;
 }

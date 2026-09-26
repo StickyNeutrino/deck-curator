@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import type { NativeStatus, Project, ProjectCategory, SpeciesEntry } from "./types";
 import { makeSpecies } from "./types";
-import { makeId, parseAltNames } from "./ids";
+import { makeId, parseAltNames, uniqueId } from "./ids";
 import { uuid } from "./uuid";
 
 /**
@@ -45,6 +45,7 @@ export function parseSpreadsheet(data: ArrayBuffer, filename: string): ImportRes
   const species: SpeciesEntry[] = [];
   const categories: ProjectCategory[] = [];
   const categoryIds = new Map<string, string>(); // label → id
+  const usedCategoryIds = new Set<string>(); // ids across all labels
 
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
@@ -71,7 +72,10 @@ export function parseSpreadsheet(data: ArrayBuffer, filename: string): ImportRes
         : sheetCategory;
       let categoryId = categoryIds.get(categoryLabel.toLowerCase());
       if (!categoryId) {
-        categoryId = makeId(categoryLabel) || "species";
+        // Two labels can slug to the same id ("Birds!" and "Birds") — the
+        // id is a store key, so uniquify instead of colliding.
+        categoryId = uniqueId(makeId(categoryLabel) || "species", usedCategoryIds);
+        usedCategoryIds.add(categoryId);
         categoryIds.set(categoryLabel.toLowerCase(), categoryId);
         categories.push({ id: categoryId, label: categoryLabel });
       }
@@ -82,7 +86,12 @@ export function parseSpreadsheet(data: ArrayBuffer, filename: string): ImportRes
         id: uuid(),
         category: categoryId,
         commonName,
-        sciName: sciNameRaw.replace(/\s+(ssp|subsp|var|f|forma)\.\s+/i, " "),
+        sciName: sciNameRaw
+          // Rank markers only survive in iNat queries via stripRankMarkers —
+          // strip them here too (all occurrences, with or without a
+          // following space: "Quercus agrifolia var.").
+          .replace(/\s+(?:ssp|subsp|var|f|forma)\.\s*/gi, " ")
+          .trim(),
         altNames: parseAltNames(str(row[findKey(headerMap, "altNames")])),
         familyLatin: str(row[findKey(headerMap, "familyLatin")]) || undefined,
         familyCommon: str(row[findKey(headerMap, "familyCommon")]) || undefined,
@@ -226,13 +235,17 @@ export function projectFromImport(
   return project;
 }
 
-/** Merge imported rows into existing species, keyed by scientific name. */
+/** Merge imported rows into existing species, keyed by scientific name.
+ *  Rows without a scientific name never merge — two commonName-only rows
+ *  would otherwise collapse into one, dropping a card. */
 function mergeSpecies(existing: SpeciesEntry[], incoming: SpeciesEntry[]): SpeciesEntry[] {
-  const bySci = new Map(existing.map((s) => [s.sciName.toLowerCase(), s]));
+  const bySci = new Map(
+    existing.filter((s) => s.sciName.trim()).map((s) => [s.sciName.toLowerCase(), s]),
+  );
   const merged = [...existing];
   for (const s of incoming) {
-    const key = s.sciName.toLowerCase();
-    const target = bySci.get(key);
+    const key = s.sciName.trim().toLowerCase();
+    const target = key ? bySci.get(key) : undefined;
     if (target) {
       // Update fields that the spreadsheet can fill, keep photos.
       Object.assign(target, {
@@ -248,7 +261,7 @@ function mergeSpecies(existing: SpeciesEntry[], incoming: SpeciesEntry[]): Speci
       });
     } else {
       merged.push(s);
-      bySci.set(key, s);
+      if (key) bySci.set(key, s);
     }
   }
   return merged;

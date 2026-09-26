@@ -1,4 +1,4 @@
-import { Link, useLocation } from "react-router";
+import { Link } from "react-router";
 
 /**
  * Tab navigation across the project screens: Deck info (name/description/
@@ -7,8 +7,6 @@ import { Link, useLocation } from "react-router";
  */
 
 export function ProjectTabs({ projectId, active }: { projectId: string; active: "cards" | "info" | "review" | "export" }) {
-  const location = useLocation();
-  void location;
   const tabs: Array<{ id: typeof active; label: string; to: string }> = [
     { id: "info", label: "ℹ️ Deck info", to: `/project/${projectId}/info` },
     { id: "cards", label: "🗂 Cards", to: `/project/${projectId}` },

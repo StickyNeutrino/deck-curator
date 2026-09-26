@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PhotoSlot } from "~/lib/types";
 import { getFile } from "~/lib/store";
 import { extractGifFrame, extractPosterFrame } from "~/lib/motion";
@@ -73,8 +73,8 @@ export function FrameModal({
           canvas.height = image.displayHeight;
           canvas.getContext("2d")!.drawImage(image, 0, 0);
           image.close?.();
-          const frameBlob = await new Promise<Blob>((resolve) =>
-            canvas.toBlob((b) => resolve(b!), "image/jpeg", 0.9),
+          const frameBlob = await new Promise<Blob>((resolve, reject) =>
+            canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Frame capture failed."))), "image/jpeg", 0.9),
           );
           list.push({ index: i, blob: frameBlob });
           if (cancelled) return;
@@ -88,6 +88,18 @@ export function FrameModal({
     })();
     return () => { cancelled = true; };
   }, [kind, url, projectId, slot.animation?.fileKey]);
+
+  // Object URLs for the frame strip: created once per decode (an inline
+  // createObjectURL in JSX minted a dozen leaked URLs per render).
+  const frameUrls = useMemo(
+    () => (frames ?? []).map((f) => ({ index: f.index, url: URL.createObjectURL(f.blob) })),
+    [frames],
+  );
+  useEffect(() => {
+    return () => {
+      for (const f of frameUrls) URL.revokeObjectURL(f.url);
+    };
+  }, [frameUrls]);
 
   const saveFrame = async () => {
     setBusy("Capturing…");
@@ -173,7 +185,7 @@ export function FrameModal({
             <img src={url} alt="" className="w-full max-h-80 rounded" data-testid="frame-gif" />
             {frames && (
               <div className="flex flex-wrap gap-2" data-testid="frame-list">
-                {frames.map((f) => (
+                {frameUrls.map((f) => (
                   <button
                     key={f.index}
                     className={`rounded border-2 overflow-hidden cursor-pointer ${Math.abs(f.index - Math.round((time || 0) * 10)) < 5 ? "border-[var(--accent)]" : "border-transparent"}`}
@@ -181,7 +193,7 @@ export function FrameModal({
                     title={`Frame ${f.index}`}
                     data-testid={`frame-${f.index}`}
                   >
-                    <img src={URL.createObjectURL(f.blob)} alt="" className="h-16" />
+                    <img src={f.url} alt="" className="h-16" />
                   </button>
                 ))}
               </div>

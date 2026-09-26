@@ -22,18 +22,33 @@ export async function extractPosterFrame(videoBlob: Blob, atSec = 0.1): Promise<
     video.preload = "auto";
     video.src = url;
     await new Promise<void>((resolve, reject) => {
-      video.onloadeddata = () => resolve();
-      video.onerror = () => reject(new Error("This video couldn't be decoded in the browser."));
-      setTimeout(() => reject(new Error("Video load timed out.")), 15_000);
+      // Cleared on settle — a leftover timer rejects after the promise
+      // resolved and keeps the video element alive.
+      const timer = setTimeout(() => reject(new Error("Video load timed out.")), 15_000);
+      const settle = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      video.onloadeddata = settle;
+      video.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("This video couldn't be decoded in the browser."));
+      };
     });
     if (atSec > 0 && atSec < video.duration) {
       await new Promise<void>((resolve) => {
-        video.onseeked = () => resolve();
+        const timer = setTimeout(resolve, 3000); // seek safety net
+        video.onseeked = () => {
+          clearTimeout(timer);
+          resolve();
+        };
         video.currentTime = atSec;
-        setTimeout(resolve, 3000); // seek safety net
       });
     }
-    return canvasToJpeg(drawToCanvas(video, video.videoWidth || 640, video.videoHeight || 480));
+    const canvas = drawToCanvas(video, video.videoWidth || 640, video.videoHeight || 480);
+    video.pause?.();
+    video.removeAttribute("src"); // release the decoder
+    return canvasToJpeg(canvas);
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -64,8 +79,17 @@ export async function extractGifFrame(gifBlob: Blob, frameIndex = 0): Promise<Bl
     const img = document.createElement("img");
     img.src = url;
     await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("GIF couldn't be decoded."));
+      // Without a timeout a stalled decode hangs acquireMediaSlot forever.
+      const timer = setTimeout(() => reject(new Error("GIF decode timed out.")), 15_000);
+      const settle = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      img.onload = settle;
+      img.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("GIF couldn't be decoded."));
+      };
     });
     return canvasToJpeg(drawToCanvas(img, img.naturalWidth || 640, img.naturalHeight || 480));
   } finally {

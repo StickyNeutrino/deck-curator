@@ -98,7 +98,8 @@ export async function enrichProject(
   }
 
   // Phase 3: iconic-taxon classification for everything auto-sortable, in
-  // batches of 50 (one cached request per batch).
+  // batches of 30 (iNat's "too many ids" limit; one cached request per
+  // batch).
   const sortables = all.filter((s) => s.taxonId != null && isAutoSortable(s));
   const iconic = await fetchIconicTaxa(sortables.map((s) => s.taxonId!));
   let sorted = 0;

@@ -112,6 +112,46 @@ describe("deck archive import", () => {
     expect(await getFile("clash", "dudleya-main.jpg")).toBeUndefined();
   });
 
+  it("imports animation clips (import/export are symmetric)", async () => {
+    const withAnim = {
+      ...manifest,
+      categories: [
+        {
+          id: "plants",
+          label: "🌿 Plants",
+          cards: [
+            {
+              name: "Oak",
+              commonName: "Oak",
+              layout: "photo-single",
+              photos: [
+                {
+                  file: "photos/oak-main.jpg",
+                  role: "main",
+                  credit: { observer: "joodles", license: "cc0" },
+                  animation: { file: "photos/oak-anim.mp4", kind: "video", durationSec: 3 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const zip = zipSync({
+      "manifest.json": strToU8(JSON.stringify(withAnim)),
+      "photos/oak-main.jpg": strToU8("still-bytes"),
+      "photos/oak-anim.mp4": strToU8("clip-bytes"),
+    });
+    const file = new File([zip as unknown as BlobPart], "anim.zip", { type: "application/zip" });
+
+    const project = await importDeckArchive(file);
+    const slot = project.species[0].photos[0];
+    expect(slot.animation).toBeDefined();
+    expect(slot.animation!.kind).toBe("video");
+    expect(slot.animation!.durationSec).toBe(3);
+    expect(await getFile(project.id, slot.animation!.fileKey)).toBeInstanceOf(Blob);
+  });
+
   it("treats legacy invasive:true as the red border", () => {
     const legacy = {
       id: "legacy",

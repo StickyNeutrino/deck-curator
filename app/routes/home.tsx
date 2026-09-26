@@ -1,7 +1,7 @@
 import type { Route } from "./+types/home";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router";
-import { listProjects, deleteProject, saveProject, type ProjectSummary } from "~/lib/store";
+import { listProjects, saveProject, type ProjectSummary } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { uniqueId } from "~/lib/ids";
 

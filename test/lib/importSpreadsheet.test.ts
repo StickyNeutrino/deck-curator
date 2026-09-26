@@ -10,6 +10,14 @@ function sheetToBuffer(rows: Array<Record<string, string | number>>): ArrayBuffe
   return XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
 }
 
+function multiSheetBuffer(sheets: Array<{ name: string; rows: Array<Record<string, string | number>> }>): ArrayBuffer {
+  const wb = XLSX.utils.book_new();
+  for (const { name, rows } of sheets) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name);
+  }
+  return XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+}
+
 describe("spreadsheet import", () => {
   it("parses the documented columns", () => {
     const buf = sheetToBuffer([
@@ -103,5 +111,38 @@ describe("helpers", () => {
   it("parses alt-name cells", () => {
     expect(parseAltNames("A; B · C")).toEqual(["A", "B", "C"]);
     expect(parseAltNames("")).toEqual([]);
+  });
+});
+
+describe("spreadsheet import edge cases", () => {
+  it("strips rank markers in every position and form", () => {
+    const buf = sheetToBuffer([
+      { "Common Name": "A", "Scientific Name": "Prunus ilicifolia ssp. lyonii" },
+      { "Common Name": "B", "Scientific Name": "Quercus agrifolia var." },
+      { "Common Name": "C", "Scientific Name": "Dudleya edulis f. alba" },
+    ]);
+    const names = parseSpreadsheet(buf, "t.xlsx").species.map((s) => s.sciName);
+    expect(names).toEqual(["Prunus ilicifolia lyonii", "Quercus agrifolia", "Dudleya edulis alba"]);
+  });
+
+  it("keeps two categories whose labels slug to the same id distinct", () => {
+    const buf = multiSheetBuffer([
+      { name: "Birds!", rows: [{ "Common Name": "Wren" }] },
+      { name: "Birds", rows: [{ "Common Name": "Robin" }] },
+    ]);
+    const result = parseSpreadsheet(buf, "t.xlsx");
+    const ids = result.categories.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length); // no duplicate category ids
+    expect(result.species).toHaveLength(2);
+  });
+
+  it("does not merge commonName-only rows that share an empty scientific name", () => {
+    const buf = sheetToBuffer([
+      { "Common Name": "Red Flower", "Scientific Name": "" },
+      { "Common Name": "Blue Flower", "Scientific Name": "" },
+    ]);
+    const result = parseSpreadsheet(buf, "t.xlsx");
+    expect(result.species).toHaveLength(2);
+    expect(result.species.map((s) => s.commonName)).toEqual(["Red Flower", "Blue Flower"]);
   });
 });
