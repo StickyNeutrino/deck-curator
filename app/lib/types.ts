@@ -67,7 +67,6 @@ export function searchSettingsOf(project: Pick<Project, "inatSearch">): InatSear
 }
 
 export type NativeStatus = "native" | "non-native" | "unknown";
-
 /** Card border styles — the colored tag the flashcards app draws around a
  *  card. "invasive" is the original red invasive marker; the others are
  *  curator-chosen emphasis colors (exported as manifest `border`). */
@@ -152,6 +151,20 @@ export interface SpeciesEntry {
   notes?: string;
   /** True once the name has been resolved against iNaturalist. */
   inatResolved?: boolean;
+}
+
+/** Every file key the project's photo slots reference — stills and, when a
+ *  slot carries moving media, its clip. Commits, restores, validation, and
+ *  cleanup must all treat both, or operations silently drop clips. */
+export function referencedFileKeys(project: Pick<Project, "species">): Set<string> {
+  const keys = new Set<string>();
+  for (const s of project.species) {
+    for (const p of s.photos) {
+      if (p.fileKey) keys.add(p.fileKey);
+      if (p.animation?.fileKey) keys.add(p.animation.fileKey);
+    }
+  }
+  return keys;
 }
 
 export interface ProjectCategory {

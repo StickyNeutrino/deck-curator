@@ -2,8 +2,9 @@ import type { Route } from "./+types/species";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useMemo } from "react";
-import { getProject, saveProject, getFile, putFile, deleteFile } from "~/lib/store";
+import { getProject, saveProject, getFile, putFile, deleteFile, listFileKeys } from "~/lib/store";
 import type { Project, SpeciesEntry, CardLayout, PhotoSlot } from "~/lib/types";
+import { referencedFileKeys } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
@@ -28,15 +29,7 @@ export default function SpeciesPage() {
   const [saved, setSaved] = useState(false);
   const [cropSlot, setCropSlot] = useState<{ slot: SpeciesEntry["photos"][number]; index: number } | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-
-  // Photo blobs whose slots were removed/replaced while editing. Files are
-  // only actually deleted once the draft is saved — deleting earlier would
-  // leave the persisted project pointing at missing blobs if the curator
-  // cancels. (Orphans after Cancel are harmless storage dust.)
-  const pendingDeletions = useRef<Set<string>>(new Set());
-  const queueDeletion = useCallback((keys: Array<string | undefined | null>) => {
-    for (const key of keys) if (key) pendingDeletions.current.add(key);
-  }, []);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Where "Save & close" / "Cancel" should return to — e.g. the review page
   // with the "needs fixing" filter active. Falls back to the deck list.
@@ -51,7 +44,9 @@ export default function SpeciesPage() {
 
   useEffect(() => {
     if (!projectId) return;
-    void getProject(projectId).then((p) => setProject(p ?? null));
+    void getProject(projectId)
+      .then((p) => setProject(p ?? null))
+      .catch((err) => setLoadError(`Couldn't load the deck: ${err instanceof Error ? err.message : err}`));
   }, [projectId]);
 
   const entry = project?.species.find((s) => s.id === speciesId) ?? null;
@@ -59,10 +54,7 @@ export default function SpeciesPage() {
   // Initialize (or, when navigating between species in place, reset) the
   // local draft once the project has loaded.
   useEffect(() => {
-    if (entry && (!draft || draft.id !== entry.id)) {
-      pendingDeletions.current.clear(); // the saved project still owns those files
-      setDraft(structuredClone(entry));
-    }
+    if (entry && (!draft || draft.id !== entry.id)) setDraft(structuredClone(entry));
   }, [entry, draft]);
 
   const update = useCallback((mutate: (d: SpeciesEntry) => void) => {
@@ -102,10 +94,24 @@ export default function SpeciesPage() {
       setSaveError(err instanceof Error ? err.message : String(err));
       return null;
     }
-    // The save is durable — now the removed/replaced blobs can really go.
-    const doomed = [...pendingDeletions.current];
-    pendingDeletions.current.clear();
-    await Promise.all(doomed.map((key) => deleteFile(projectId ?? "", key)));
+    // Garbage-collect blobs nothing references anymore (removed/replaced
+    // photos and clips). The deletion set keys off the snapshot that was
+    // JUST saved — the persisted record is the only truth about what's
+    // needed, so this can't race a concurrent save the way a side queue
+    // could. The live draft is protected too: an upload may have stored its
+    // bytes just before its slot landed in the draft.
+    try {
+      const keep = referencedFileKeys(next);
+      for (const p of draft.photos) {
+        if (p.fileKey) keep.add(p.fileKey);
+        if (p.animation?.fileKey) keep.add(p.animation.fileKey);
+      }
+      for (const key of await listFileKeys(projectId ?? "")) {
+        if (!keep.has(key)) await deleteFile(projectId ?? "", key);
+      }
+    } catch (err) {
+      console.warn("Photo cleanup failed (files remain):", err);
+    }
     setProject(next);
     setSaved(true);
     setSaveError(null);
@@ -115,7 +121,11 @@ export default function SpeciesPage() {
   if (!project) {
     return (
       <Shell backLabel="Back" backTo={closeTarget}>
-        <p>Loading…</p>
+        {loadError ? (
+          <p role="alert" style={{ color: "var(--danger)" }}>{loadError}</p>
+        ) : (
+          <p>Loading…</p>
+        )}
       </Shell>
     );
   }
@@ -149,7 +159,6 @@ export default function SpeciesPage() {
             species={draft}
             projectId={projectId ?? ""}
             onChange={update}
-            queueDeletion={queueDeletion}
             onRequestCrop={(slot, index) => setCropSlot({ slot, index })}
           />
 
@@ -192,7 +201,6 @@ export default function SpeciesPage() {
         projectId={projectId ?? ""}
         settings={inatSearchSettings}
         onChange={update}
-        queueDeletion={queueDeletion}
       />
       {cropSlot && (
         <CropModal
@@ -417,13 +425,11 @@ function PhotosEditor({
   species,
   projectId,
   onChange,
-  queueDeletion,
   onRequestCrop,
 }: {
   species: SpeciesEntry;
   projectId: string;
   onChange: (f: (d: SpeciesEntry) => void) => void;
-  queueDeletion: (keys: Array<string | undefined | null>) => void;
   onRequestCrop: (slot: SpeciesEntry["photos"][number], index: number) => void;
 }) {
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -435,8 +441,8 @@ function PhotosEditor({
   const [pendingReplace, setPendingReplace] = useState<{ files: File[] } | null>(null);
 
   const removePhoto = (slot: SpeciesEntry["photos"][number]) => {
-    // Defer the blob deletion to the save (see pendingDeletions).
-    queueDeletion([slot.fileKey, slot.animation?.fileKey]);
+    // The blob is garbage-collected at the next save; until then the saved
+    // project still references it, so Cancel stays perfectly safe.
     onChange((d) => {
       d.photos = d.photos.filter((p) => p.id !== slot.id);
     });
@@ -528,11 +534,11 @@ function PhotosEditor({
     const old = species.photos[slotIndex];
     if (!file || !old) return;
     // Land the upload on a fresh key — overwriting the old fileKey in place
-    // changed the saved deck's photo before the draft was ever saved.
+    // changed the saved deck's photo before the draft was ever saved. The
+    // orphaned old file is garbage-collected at the next save.
     const base = slugify(species.commonName || species.sciName || "photo");
     const fileKey = `${base}-${old.role}-${uuid().slice(0, 6)}.jpg`;
     await putFile(projectId, fileKey, file);
-    queueDeletion([old.fileKey, old.animation?.fileKey]);
     onChange((d) => {
       const slot = d.photos[slotIndex];
       if (slot) {
@@ -700,8 +706,7 @@ function PhotosEditor({
             const base = slugify(species.commonName || species.sciName || "still");
             const posterKey = `${base}-frame-${uuid().slice(0, 6)}.jpg`;
             await putFile(projectId, posterKey, still);
-            // The old still stays in the store until the draft is saved.
-            queueDeletion([slot.fileKey]);
+            // The old still is garbage-collected at the next save.
             onChange((d) => {
               const target = d.photos[frameSlot];
               if (target) target.fileKey = posterKey;

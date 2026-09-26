@@ -1,5 +1,5 @@
 import type { Project } from "./types";
-import { migrateProject } from "./types";
+import { migrateProject, referencedFileKeys } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
 import { getFile, restoreSnapshot } from "./store";
@@ -238,20 +238,6 @@ async function photosUnchangedSinceHead(project: Project): Promise<boolean> {
 export function defaultCommitMessage(project: Project): string {
   const photos = project.species.reduce((n, s) => n + s.photos.length, 0);
   return `Autosave — ${project.species.length} species, ${photos} photos`;
-}
-
-/** Every file key a species' photos reference — the still and, when the slot
- *  carries moving media, its clip. Commits, restores, and cleanup must treat
- *  both, or a restore silently deletes clips. */
-function referencedFileKeys(project: Project): Set<string> {
-  const keys = new Set<string>();
-  for (const s of project.species) {
-    for (const p of s.photos) {
-      if (p.fileKey) keys.add(p.fileKey);
-      if (p.animation?.fileKey) keys.add(p.animation.fileKey);
-    }
-  }
-  return keys;
 }
 
 async function commitAll(

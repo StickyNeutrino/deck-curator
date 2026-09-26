@@ -21,15 +21,12 @@ export function InatPhotoBrowser({
   projectId,
   settings,
   onChange,
-  queueDeletion,
 }: {
   species: SpeciesEntry;
   projectId: string;
   /** Deck search constraints (from the project); defaults apply when absent. */
   settings?: InatSearchSettings;
   onChange: (f: (d: SpeciesEntry) => void) => void;
-  /** Files whose slots were replaced are deleted when the draft is saved. */
-  queueDeletion: (keys: Array<string | undefined | null>) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,10 +100,9 @@ export function InatPhotoBrowser({
         if (replaceIndex !== undefined) {
           // Full card: swap in the new media at the picked slot, keeping its
           // role and clearing any crop tuned to the old image. The old
-          // files are deleted only once the draft is saved.
+          // files are garbage-collected when the draft is saved.
           const old = species.photos[replaceIndex];
           if (!old) return;
-          queueDeletion([old.fileKey, old.animation?.fileKey]);
           onChange((d) => {
             const slot = d.photos[replaceIndex];
             if (slot) {
@@ -134,7 +130,7 @@ export function InatPhotoBrowser({
         setStatus(`Could not download media: ${err instanceof Error ? err.message : err}`);
       }
     },
-    [species, projectId, onChange, settings, queueDeletion],
+    [species, projectId, onChange, settings],
   );
 
   const autoPick = useCallback(async () => {
