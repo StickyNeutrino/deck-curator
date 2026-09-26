@@ -185,6 +185,9 @@ export default function ExportPage() {
               a.click();
               URL.revokeObjectURL(a.href);
               setDone(filename);
+              setSaveError(null);
+            } catch (err) {
+              setSaveError(`Export failed: ${err instanceof Error ? err.message : err}`);
             } finally {
               setExporting(false);
             }

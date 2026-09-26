@@ -21,10 +21,18 @@ export default function Home() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const archiveInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    listProjects().then(setProjects).catch(() => setProjects([]));
+    listProjects()
+      .then(setProjects)
+      .catch((err) => {
+        // Distinguish "no decks" from "can't read the store" — the latter
+        // must not claim the decks are gone.
+        setProjects(null);
+        setListError(`Couldn't load your decks: ${err instanceof Error ? err.message : err}`);
+      });
   }, []);
 
   const createProject = useCallback(async () => {
@@ -168,15 +176,20 @@ export default function Home() {
 
       <section>
         <h2 className="font-semibold mb-3">Your decks</h2>
-        {projects === null ? (
+        {listError && (
+          <p className="text-sm" role="alert" style={{ color: "var(--danger)" }}>
+            {listError}
+          </p>
+        )}
+        {projects === null && !listError ? (
           <p className="text-sm" style={{ color: "var(--muted)" }}>
             Loading…
           </p>
-        ) : projects.length === 0 ? (
+        ) : projects !== null && projects.length === 0 ? (
           <p className="text-sm" style={{ color: "var(--muted)" }} data-testid="no-projects">
             No decks yet. Create one to get started.
           </p>
-        ) : (
+        ) : projects !== null ? (
           <ul className="divide-y rounded-lg border bg-white" style={{ borderColor: "var(--border)" }}>
             {projects.map((p) => (
               <li key={p.id}>
@@ -197,7 +210,7 @@ export default function Home() {
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
       </section>
     </main>
   );

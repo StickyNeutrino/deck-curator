@@ -1,14 +1,12 @@
 import type { Route } from "./+types/info";
-import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
-import { getProject, saveProject } from "~/lib/store";
-import type { Project } from "~/lib/types";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { LocationPicker } from "~/components/LocationPicker";
 import { CategoriesManager } from "~/components/CategoriesManager";
 import { TagsManager } from "~/components/TagsManager";
 import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
 import { searchSettingsOf } from "~/lib/types";
+import { useProjectDoc } from "~/lib/useProjectDoc";
 
 /**
  * Deck info: everything about the deck itself — name, description, its
@@ -24,32 +22,20 @@ export function meta({}: Route.MetaArgs) {
 
 export default function InfoPage() {
   const { projectId } = useParams();
-  const [project, setProject] = useState<Project | null>(null);
-  const [notFound, setNotFound] = useState(false);
-
-  useEffect(() => {
-    if (!projectId) return;
-    void getProject(projectId).then((p) => {
-      if (p) setProject(p);
-      else setNotFound(true);
-    });
-  }, [projectId]);
-
-  // Autosave on every change (store sets updatedAt).
-  const update = (mutate: (draft: Project) => void) => {
-    setProject((current) => {
-      if (!current) return current;
-      const draft = structuredClone(current);
-      mutate(draft);
-      void saveProject(draft);
-      return draft;
-    });
-  };
+  const { project, notFound, loadError, update } = useProjectDoc(projectId);
 
   if (notFound) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-10">
         <p>Project not found.</p>
+        <Link to="/" className="btn-secondary mt-4 inline-flex">Back to all decks</Link>
+      </main>
+    );
+  }
+  if (loadError) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-10">
+        <p role="alert" style={{ color: "var(--danger)" }}>{loadError}</p>
         <Link to="/" className="btn-secondary mt-4 inline-flex">Back to all decks</Link>
       </main>
     );

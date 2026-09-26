@@ -20,6 +20,7 @@ export function CategoriesManager({
   const [newLabel, setNewLabel] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [resorting, setResorting] = useState(false);
+  const [resortError, setResortError] = useState<string | null>(null);
 
   const addCategory = () => {
     const label = newLabel.trim();
@@ -65,6 +66,7 @@ export function CategoriesManager({
             // move species into the new groups, not wait for the next
             // enrichment run.
             void (async () => {
+              setResortError(null);
               setResorting(true);
               try {
                 const sorted = await resortByTaxonomy({ ...project, granularity });
@@ -73,6 +75,10 @@ export function CategoriesManager({
                   d.categories = sorted.categories;
                   d.species = sorted.species;
                 });
+              } catch (err) {
+                // Without this the rejection was unhandled and the select
+                // silently snapped back, showing no error.
+                setResortError(`Couldn't re-sort by taxonomy: ${err instanceof Error ? err.message : err}`);
               } finally {
                 setResorting(false);
               }
@@ -88,6 +94,11 @@ export function CategoriesManager({
           <span style={{ color: "var(--muted)" }}>(species move into the new groups right away)</span>
         )}
       </label>
+      {resortError && (
+        <p className="text-sm mb-2" role="alert" style={{ color: "var(--danger)" }}>
+          {resortError}
+        </p>
+      )}
       <ul className="flex flex-wrap items-center gap-2">
         {project.categories.map((c) => {
           const count = project.species.filter((s) => s.category === c.id).length;

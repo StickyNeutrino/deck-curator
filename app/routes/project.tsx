@@ -1,11 +1,11 @@
 import type { Route } from "./+types/project";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { getProject, saveProject } from "~/lib/store";
 import { AddSpeciesModal } from "~/components/AddSpeciesModal";
 import { ToolsMenu } from "~/components/ToolsMenu";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "~/lib/types";
+import { useProjectDoc } from "~/lib/useProjectDoc";
 import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
 import { allTags } from "~/components/TagsManager";
 
@@ -16,36 +16,18 @@ export function meta({ params }: Route.MetaArgs) {
 export default function ProjectPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const [project, setProject] = useState<Project | null>(null);
-  const [notFound, setNotFound] = useState(false);
+  const { project, notFound, loadError, update } = useProjectDoc(projectId);
   const [showAdd, setShowAdd] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // Make sure the git history exists from the moment a project opens —
+  // once per project id, not on every edit.
+  const repoInitRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!projectId) return;
-    void getProject(projectId).then((p) => {
-      if (p) {
-        setProject(p);
-        // Make sure the git history exists from the moment a project opens.
-        void ensureRepo(p).catch(() => undefined);
-      }
-      else setNotFound(true);
-    });
-  }, [projectId]);
-
-  // Autosave on every project change (store sets updatedAt).
-  const update = useCallback(
-    (mutate: (draft: Project) => void) => {
-      setProject((current) => {
-        if (!current) return current;
-        const draft = structuredClone(current);
-        mutate(draft);
-        void saveProject(draft);
-        return draft;
-      });
-    },
-    [],
-  );
+    if (!project || repoInitRef.current === project.id) return;
+    repoInitRef.current = project.id;
+    void ensureRepo(project).catch(() => undefined);
+  }, [project]);
 
   // Auto-version: commit the deck to its git history shortly after the last
   // change settles. Failures are swallowed inside commitDeckVersion.
@@ -72,6 +54,14 @@ export default function ProjectPage() {
     return (
       <main className="mx-auto max-w-3xl px-4 py-10">
         <p>Project not found.</p>
+        <Link to="/" className="btn-secondary mt-4 inline-flex">Back to all decks</Link>
+      </main>
+    );
+  }
+  if (loadError) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-10">
+        <p role="alert" style={{ color: "var(--danger)" }}>{loadError}</p>
         <Link to="/" className="btn-secondary mt-4 inline-flex">Back to all decks</Link>
       </main>
     );

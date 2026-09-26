@@ -1,12 +1,13 @@
 import type { Route } from "./+types/review";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import { getProject, listFiles, saveProject } from "~/lib/store";
+import { listFiles } from "~/lib/store";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { validateProject } from "~/lib/validate";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { allTags } from "~/components/TagsManager";
 import { ProjectTabs } from "~/components/ProjectTabs";
+import { useProjectDoc } from "~/lib/useProjectDoc";
 
 /**
  * Whole-deck review: every card laid out front and back in one long grid so
@@ -21,7 +22,7 @@ export function meta({}: Route.MetaArgs) {
 export default function ReviewPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const [project, setProject] = useState<Project | null>(null);
+  const { project, notFound, loadError, update } = useProjectDoc(projectId);
   const [blobMap, setBlobMap] = useState<Map<string, Blob>>(new Map());
   const [filter, setFilter] = useState<"all" | "flagged" | "issues" | "tag">("all");
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -44,7 +45,6 @@ export default function ReviewPage() {
 
   useEffect(() => {
     if (!projectId) return;
-    void getProject(projectId).then((p) => setProject(p ?? null));
     void listFilesThenSet(projectId, setBlobMap);
   }, [projectId]);
 
@@ -56,17 +56,13 @@ export default function ReviewPage() {
   // Toggle the curator-only "needs review" flag; autosaves like any edit.
   const toggleFlag = useCallback(
     (speciesId: string) => {
-      setProject((current) => {
-        if (!current) return current;
-        const next = structuredClone(current);
+      update((next) => {
         const target = next.species.find((s) => s.id === speciesId);
-        if (!target) return current;
+        if (!target) return;
         target.needsReview = !target.needsReview;
-        void saveProject(next);
-        return next;
       });
     },
-    [],
+    [update],
   );
 
   // All hooks run on every render — the early return below must not change
@@ -121,6 +117,30 @@ export default function ReviewPage() {
   );
   const totalCount = project?.species.length ?? 0;
   const tags = useMemo(() => (project ? allTags(project) : []), [project]);
+
+  if (notFound) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-10">
+        <p>Project not found.</p>
+        <Link to="/" className="btn-secondary mt-4 inline-flex">Back to all decks</Link>
+      </main>
+    );
+  }
+  if (loadError) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-10">
+        <p role="alert" style={{ color: "var(--danger)" }}>{loadError}</p>
+        <Link to="/" className="btn-secondary mt-4 inline-flex">Back to all decks</Link>
+      </main>
+    );
+  }
+  if (!project) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-10">
+        <p>Loading…</p>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8">

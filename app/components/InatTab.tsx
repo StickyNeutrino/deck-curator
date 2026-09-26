@@ -515,7 +515,7 @@ export function InatTab({
                 onClick={() =>
                   void addResult(r, { exclude: photoIdsInDeck(cards), category: cards[0]?.category })
                 }
-                disabled={busyName !== null || bulk !== null}
+                disabled={busyName !== null || bulk !== null || searching}
                 data-testid={`add-inat-${r.id}`}
               >
                 {busyName === r.name ? "Adding…" : cards.length ? "+ Another" : "+ Add"}
