@@ -66,6 +66,19 @@ export function LocationPicker({
   const containerRef = useRef<HTMLDivElement>(null);
   const loc = value;
 
+  // The map's drag/click handlers are attached once at mount and would
+  // otherwise close over that render's value — dragging after picking a
+  // place reverts the picked name/radius. The ref keeps them current.
+  const locRef = useRef(loc);
+  useEffect(() => { locRef.current = loc; }, [loc]);
+
+  // Coordinate/radius fields are edited as text and committed on blur/Enter:
+  // parsing per keystroke made "." untypable ("32." snapped back to "32")
+  // and an emptied field wrote 0 into the deck's coordinates.
+  const [latDraft, setLatDraft] = useState<string | null>(null);
+  const [lngDraft, setLngDraft] = useState<string | null>(null);
+  const [radiusDraft, setRadiusDraft] = useState<string | null>(null);
+
   const set = useCallback(
     (next: DeckLocation) => {
       onChange({ radiusKm: showRadius ? (loc?.radiusKm ?? 10) : undefined, ...next });
@@ -73,22 +86,31 @@ export function LocationPicker({
     [onChange, loc?.radiusKm, showRadius],
   );
 
-  // Debounced geocode as the user types.
+  // Debounced geocode as the user types. The cleanup marks in-flight
+  // requests stale: a slow response for an earlier query must not overwrite
+  // a newer one's results.
   useEffect(() => {
     if (query.trim().length < 3) {
       setResults([]);
       return;
     }
+    let cancelled = false;
     const t = setTimeout(async () => {
       setSearchError(null);
       try {
-        setResults(await geocode(query.trim()));
+        const found = await geocode(query.trim());
+        if (cancelled) return;
+        setResults(found);
         setOpen(true);
       } catch {
+        if (cancelled) return;
         setSearchError("Place search is unavailable right now — you can still pick on the map or enter coordinates.");
       }
     }, 600);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [query]);
 
   // Leaflet map: lazily initialized once the container mounts.
@@ -117,15 +139,19 @@ export function LocationPicker({
       if (loc?.lat != null) marker.addTo(map);
       marker.on("dragend", () => {
         const pos = marker.getLatLng();
-        onChange({ name: loc?.name, lat: pos.lat, lng: pos.lng, radiusKm: loc?.radiusKm });
+        const current = locRef.current;
+        onChange({ name: current?.name, lat: pos.lat, lng: pos.lng, radiusKm: current?.radiusKm });
       });
       map.on("click", (e) => {
         marker.setLatLng(e.latlng).addTo(map);
-        onChange({ name: loc?.name, lat: e.latlng.lat, lng: e.latlng.lng, radiusKm: loc?.radiusKm });
+        const current = locRef.current;
+        onChange({ name: current?.name, lat: e.latlng.lat, lng: e.latlng.lng, radiusKm: current?.radiusKm });
       });
       mapRef.current = { map, marker };
       if (cancelled) map.remove();
-    })();
+    })().catch(() => {
+      setSearchError("The map couldn't load — you can still search for a place or enter coordinates.");
+    });
     return () => {
       cancelled = true;
       mapRef.current?.map.remove();
@@ -142,9 +168,26 @@ export function LocationPicker({
     map.setView([loc.lat, loc.lng], Math.max(map.getZoom(), 9), { animate: false });
   }, [loc?.lat, loc?.lng]);
 
+  const commitCoord = (raw: string | null, kind: "lat" | "lng") => {
+    if (raw === null || !loc) return;
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) return;
+    const inRange = kind === "lat" ? Math.abs(n) <= 90 : Math.abs(n) <= 180;
+    if (inRange) onChange({ ...loc, [kind]: n });
+  };
+
+  const commitRadius = (raw: string | null) => {
+    if (raw === null) return;
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n) || n <= 0) return;
+    onChange({ ...loc, radiusKm: n });
+  };
+
   const setResult = (r: GeoResult) => {
     setOpen(false);
     setQuery("");
+    setLatDraft(null);
+    setLngDraft(null);
     set({ name: r.name.split(",")[0], lat: r.lat, lng: r.lng });
   };
 
@@ -158,6 +201,9 @@ export function LocationPicker({
   const clear = () => {
     onChange(undefined);
     setQuery("");
+    setLatDraft(null);
+    setLngDraft(null);
+    setRadiusDraft(null);
   };
 
   return (
@@ -227,9 +273,11 @@ export function LocationPicker({
           Radius (km)
           <input
             className="field !w-24 !py-1 text-sm"
-            value={loc?.radiusKm ?? "10"}
+            value={radiusDraft ?? String(loc?.radiusKm ?? 10)}
             inputMode="decimal"
-            onChange={(e) => onChange({ ...loc, radiusKm: Number(e.target.value) || 10 })}
+            onChange={(e) => setRadiusDraft(e.target.value)}
+            onBlur={() => { commitRadius(radiusDraft); setRadiusDraft(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { commitRadius(radiusDraft); setRadiusDraft(null); } }}
             data-testid="location-radius"
           />
         </label>
@@ -240,15 +288,21 @@ export function LocationPicker({
           <div className="flex gap-2 mt-1">
             <input
               className="field !py-1 text-xs font-mono"
-              value={loc.lat}
+              value={latDraft ?? String(loc.lat)}
               aria-label="Latitude"
-              onChange={(e) => onChange({ ...loc, lat: Number(e.target.value) })}
+              inputMode="decimal"
+              onChange={(e) => setLatDraft(e.target.value)}
+              onBlur={() => { commitCoord(latDraft, "lat"); setLatDraft(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { commitCoord(latDraft, "lat"); setLatDraft(null); } }}
             />
             <input
               className="field !py-1 text-xs font-mono"
-              value={loc.lng}
+              value={lngDraft ?? String(loc.lng)}
               aria-label="Longitude"
-              onChange={(e) => onChange({ ...loc, lng: Number(e.target.value) })}
+              inputMode="decimal"
+              onChange={(e) => setLngDraft(e.target.value)}
+              onBlur={() => { commitCoord(lngDraft, "lng"); setLngDraft(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { commitCoord(lngDraft, "lng"); setLngDraft(null); } }}
             />
           </div>
         </details>
