@@ -5,7 +5,7 @@ import { getProject, listProjects, renameProject, saveProject } from "~/lib/stor
 import type { Project } from "~/lib/types";
 import { exportDeck } from "~/lib/export";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
-import { listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { ensureRepo, listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
@@ -264,7 +264,20 @@ function VersionHistory({
 
   useEffect(() => {
     void refresh();
-  }, [refresh, project.updatedAt]);
+    // The first commit lands a moment after the deck opens (ensureRepo runs
+    // on the project page) — poll while the list is empty so a freshly
+    // created deck's history appears without needing another edit.
+    if (versions !== null && versions.length > 0) return;
+    const t = setInterval(() => void refresh(), 3000);
+    return () => clearInterval(t);
+  }, [refresh, project.updatedAt, versions]);
+
+  // The project page kicks off the initial commit, but this page can be the
+  // first (or only) place a deck is opened — make sure history exists here
+  // too. ensureRepo is a no-op when the repo already has commits.
+  useEffect(() => {
+    void ensureRepo(project).catch(() => undefined);
+  }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveVersion = async () => {
     setBusy("save");
