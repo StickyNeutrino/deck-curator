@@ -222,5 +222,22 @@ export async function importDeckArchive(
     project.species.push(entry);
   }
 
+  // The archive doubles as a git repository (export ships .git/) — restore
+  // its history under the (possibly uniquified) deck id so named versions
+  // survive an export → import round trip. Best-effort: an archive without
+  // .git (third-party deck) simply has no history.
+  const gitEntries = Object.keys(entries).filter((k) => k.startsWith(".git/") && entries[k].length > 0);
+  if (gitEntries.length > 0) {
+    try {
+      const { writeGitDir } = await import("./versioning");
+      await writeGitDir(
+        deckId,
+        new Map(gitEntries.map((path) => [path, entries[path]])),
+      );
+    } catch (err) {
+      console.warn("Deck history could not be restored from the archive:", err);
+    }
+  }
+
   return project;
 }

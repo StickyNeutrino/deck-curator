@@ -389,6 +389,31 @@ async function headProjectFingerprint(projectId: string): Promise<string | null>
   }
 }
 
+/** Seed a project's git repository from a `.git/…` path map (deck-archive
+ *  import). Best-effort and idempotent-ish: callers should treat a throw as
+ *  "import without history". Path keys must live under `.git/` and contain
+ *  no traversal segments. */
+export async function writeGitDir(projectId: string, files: Map<string, Uint8Array>): Promise<void> {
+  const fs = await getFs();
+  const dir = dirFor(projectId);
+  // LightningFS's mkdir doesn't create intermediates (recursive:true is a
+  // no-op flag), so build the path level by level — including the top.
+  const mkdirp = async (path: string): Promise<void> => {
+    const segments = path.split("/").filter(Boolean);
+    let cur = "";
+    for (const seg of segments) {
+      cur = `${cur}/${seg}`;
+      try { await fs.promises.stat(cur); } catch { await fs.promises.mkdir(cur); }
+    }
+  };
+  for (const [relPath, data] of files) {
+    if (!relPath.startsWith(".git/") || relPath.split("/").some((seg) => seg === ".." || seg === "")) continue;
+    const full = `${dir}/${relPath}`;
+    await mkdirp(full.split("/").slice(0, -1).join("/"));
+    await fs.promises.writeFile(full, data);
+  }
+}
+
 /** Export the git directory itself so the zip doubles as a real git repo. */
 export async function collectGitDir(projectId: string): Promise<Map<string, Uint8Array> | null> {
   try {

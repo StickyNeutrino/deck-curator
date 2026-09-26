@@ -1,4 +1,4 @@
-import type { Project, SpeciesEntry, NativeStatus, DeckLocation } from "./types";
+import type { Project, ProjectCategory, SpeciesEntry, NativeStatus, DeckLocation } from "./types";
 import { taxaStatuses, nearbyPlaces, type InatConservationStatus, type InatEstablishment } from "./inat";
 
 /**
@@ -44,11 +44,15 @@ export type Scope = { ids?: string[] };
  * edits made while the tool was running (these runs are long — rate-limited
  * at ~1 request/second — and the UI stays interactive).
  *
- * Per species, only fields the tool actually changed versus the snapshot it
- * started from are written back. Species added mid-run are untouched, and
- * species removed mid-run stay removed (the result is applied onto the
- * current list, never replaces it). Categories are replaced only when the
- * tool actually changed them (re-sort, rename).
+ * Three-way merge per species, field by field: a tool change is applied only
+ * when the live value still matches the run's starting snapshot. If the
+ * curator changed the same field mid-run, their edit wins and the tool's
+ * value is dropped (no conflict UI — the tools are advisory and re-runnable).
+ * Fields the tool didn't change are untouched, species added mid-run are
+ * untouched, and species removed mid-run stay removed.
+ *
+ * Categories merge by identity the same way: tools add/rename/re-sort known
+ * ones; categories created mid-run always survive.
  */
 export function toolResultMerger(snapshot: Project, result: Project): (draft: Project) => void {
   return (draft: Project): void => {
@@ -60,13 +64,45 @@ export function toolResultMerger(snapshot: Project, result: Project): (draft: Pr
       if (!updated || !before) continue;
       for (const key of Object.keys(updated) as Array<keyof SpeciesEntry>) {
         if (key === "id") continue;
-        if (JSON.stringify(before[key]) === JSON.stringify(updated[key])) continue;
-        (current as unknown as Record<string, unknown>)[key] = structuredClone(updated[key]);
+        const toolChanged = JSON.stringify(before[key]) !== JSON.stringify(updated[key]);
+        if (!toolChanged) continue;
+        // Live value still as the tool saw it → apply. The curator touched
+        // this very field mid-run → their edit wins.
+        if (JSON.stringify(before[key]) === JSON.stringify(current[key])) {
+          (current as unknown as Record<string, unknown>)[key] = structuredClone(updated[key]);
+        }
       }
     }
-    if (JSON.stringify(snapshot.categories) !== JSON.stringify(result.categories)) {
-      draft.categories = structuredClone(result.categories);
+
+    // Categories merge three-way by id, like species fields:
+    //  - unchanged since the snapshot → take the tool's version (which may
+    //    have renamed, re-ordered, or removed it);
+    //  - changed mid-run (rename) or created mid-run → the curator wins;
+    //  - brand-new in the result (re-sort groups) → added.
+    const snapshotCats = new Map(snapshot.categories.map((c) => [c.id, c]));
+    const resultCats = new Map(result.categories.map((c) => [c.id, c]));
+    const merged: ProjectCategory[] = [];
+    for (const liveCat of draft.categories) {
+      const updatedCat = resultCats.get(liveCat.id);
+      if (!updatedCat) {
+        // Not in the result: either the tool removed it or the curator
+        // created it mid-run. A mid-run creation isn't in the snapshot;
+        // a snapshot category is only dropped when the curator left it
+        // untouched (otherwise their edit survives).
+        if (!snapshotCats.has(liveCat.id) || JSON.stringify(snapshotCats.get(liveCat.id)) !== JSON.stringify(liveCat)) {
+          merged.push(liveCat);
+        }
+        continue;
+      }
+      const beforeCat = snapshotCats.get(liveCat.id);
+      merged.push(!beforeCat || JSON.stringify(beforeCat) === JSON.stringify(liveCat) ? structuredClone(updatedCat) : liveCat);
     }
+    for (const updatedCat of result.categories) {
+      if (!snapshotCats.has(updatedCat.id) && !merged.some((c) => c.id === updatedCat.id)) {
+        merged.push(structuredClone(updatedCat));
+      }
+    }
+    draft.categories = merged;
   };
 }
 
