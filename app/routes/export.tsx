@@ -262,15 +262,23 @@ function VersionHistory({
     setVersions(list);
   }, [project.id]);
 
+  // Refresh on deck changes and via the Refresh button. Deliberately NOT
+  // keyed on `versions`: refresh() writes versions, and an effect that both
+  // writes and depends on its own output re-runs forever.
   useEffect(() => {
     void refresh();
-    // The first commit lands a moment after the deck opens (ensureRepo runs
-    // on the project page) — poll while the list is empty so a freshly
-    // created deck's history appears without needing another edit.
-    if (versions !== null && versions.length > 0) return;
+  }, [refresh, project.updatedAt]);
+
+  // Poll only while the list is empty, so a freshly created deck's first
+  // commit (ensureRepo, running moments after open) appears without
+  // requiring another edit. The guard reads state; it never re-arms the
+  // effect from its own result.
+  const historyEmpty = versions !== null && versions.length === 0;
+  useEffect(() => {
+    if (!historyEmpty) return;
     const t = setInterval(() => void refresh(), 3000);
     return () => clearInterval(t);
-  }, [refresh, project.updatedAt, versions]);
+  }, [historyEmpty, refresh]);
 
   // The project page kicks off the initial commit, but this page can be the
   // first (or only) place a deck is opened — make sure history exists here
@@ -297,9 +305,14 @@ function VersionHistory({
     if (!confirm("Restore this version? Current changes stay in the history.")) return;
     setBusy(oid);
     try {
+      // Make the promise true: autosave only runs on the cards page, so
+      // edits made elsewhere may never have been committed. Checkpoint the
+      // current state first — and abort the restore if that fails.
+      await commitDeckVersion(project, undefined, `Before restoring ${oid.slice(0, 8)}`, { silent: false });
+      // restoreVersion swaps files + record atomically; the returned project
+      // keeps this deck's id even when the commit predates a rename.
       const result = await restoreVersion(project.id, oid);
       if (result) {
-        await saveProject(result.project);
         onRestored(result.project);
         await commitDeckVersion(result.project, undefined, `Restored version ${oid.slice(0, 8)}`);
         await refresh();

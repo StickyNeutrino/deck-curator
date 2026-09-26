@@ -97,6 +97,33 @@ export async function renameProject(oldId: string, next: Project): Promise<void>
   await tx.done;
 }
 
+/** Atomically replace a project's files and record — used by version
+ *  restore so a failure can't leave the record pointing at changed files:
+ *  every restored file write, every removal, and the record swap share one
+ *  transaction. */
+export async function restoreSnapshot(
+  projectId: string,
+  files: Map<string, ArrayBuffer>,
+  keepKeys: Set<string>,
+  project: Project,
+): Promise<void> {
+  const database = await db();
+  const tx = database.transaction(["projects", "files"], "readwrite");
+  const filesStore = tx.objectStore("files");
+  for (const [key, buffer] of files) {
+    filesStore.put({ buffer, type: mimeForFileKey(key) }, fileKey(projectId, key));
+  }
+  const keys = (await filesStore.getAllKeys()) as string[];
+  const prefix = `${projectId}/`;
+  for (const k of keys) {
+    if (k.startsWith(prefix) && !keepKeys.has(k.slice(prefix.length))) {
+      filesStore.delete(k);
+    }
+  }
+  tx.objectStore("projects").put(structuredClone(project));
+  await tx.done;
+}
+
 export async function deleteProject(id: string): Promise<void> {
   const database = await db();
   const keys = (await database.getAllKeys("files")) as string[];

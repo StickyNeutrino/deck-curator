@@ -2,7 +2,7 @@ import type { Project } from "./types";
 import { migrateProject } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
-import { getFile, putFile, deleteFile, mimeForFileKey } from "./store";
+import { getFile, restoreSnapshot } from "./store";
 import "./polyfills";
 
 /**
@@ -99,8 +99,7 @@ const writtenFingerprints = new Map<string, string>();
 
 /** Cheap content fingerprint: FNV-1a and djb2 over the bytes (64 bits of
  *  mixing, no collision-prone size shortcut). */
-async function contentFingerprint(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blobToArrayBuffer(blob));
+function contentFingerprintBytes(bytes: Uint8Array): string {
   let h1 = 0x811c9dc5; // FNV-1a 32-bit
   let h2 = 5381; // djb2
   for (let i = 0; i < bytes.length; i++) {
@@ -109,6 +108,10 @@ async function contentFingerprint(blob: Blob): Promise<string> {
     h2 = (Math.imul(h2, 33) + bytes[i]) >>> 0;
   }
   return `${h1.toString(16)}${h2.toString(16)}-${bytes.length}`;
+}
+
+async function contentFingerprint(blob: Blob): Promise<string> {
+  return contentFingerprintBytes(new Uint8Array(await blobToArrayBuffer(blob)));
 }
 
 function fingerprint(project: Project): string {
@@ -162,7 +165,25 @@ export async function commitDeckVersion(
   try {
     const fp = fingerprint(project);
     if (lastFingerprints.get(project.id) === fp && !message) {
-      return null; // nothing new since the last commit
+      // Project JSON is unchanged — but photo BYTES can change under an
+      // unchanged key. Skip only when this session has recorded every
+      // referenced file's content; otherwise verify against HEAD once and
+      // seed the cache (a fresh session starts with an empty map, and the
+      // seed also keeps "first autosave after reload" from committing
+      // byte-identical state).
+      const keys = referencedFileKeys(project);
+      if (keys.size === 0 || [...keys].every((k) => writtenFingerprints.has(k))) {
+        return null;
+      }
+      if (await photosUnchangedSinceHead(project)) {
+        for (const fileKey of keys) {
+          const blob = await getFile(project.id, fileKey);
+          if (blob) writtenFingerprints.set(`${project.id}/${fileKey}`, await contentFingerprint(blob));
+        }
+        return null;
+      }
+      // Photo contents changed under unchanged metadata — fall through and
+      // commit so the new bytes are actually recorded.
     }
     if (!lastFingerprints.has(project.id) && !message) {
       // A fresh session starts with an empty in-memory fingerprint map —
@@ -171,7 +192,7 @@ export async function commitDeckVersion(
       const headFp = await headProjectFingerprint(project.id);
       if (headFp !== null) {
         lastFingerprints.set(project.id, headFp);
-        if (headFp === fp) return null;
+        if (headFp === fp && (await photosUnchangedSinceHead(project))) return null;
       }
     }
     return await commitAll(project, files, message ?? defaultCommitMessage(project));
@@ -182,9 +203,55 @@ export async function commitDeckVersion(
   }
 }
 
+/** True when every referenced photo's live bytes match the bytes committed
+ *  at HEAD. One-time cost per decision: reads both sides and compares
+ *  content fingerprints (git tree oids identify content, but the live side
+ *  is hashed with FNV, so bytes are compared like-for-like). */
+async function photosUnchangedSinceHead(project: Project): Promise<boolean> {
+  try {
+    const fs = await getFs();
+    const git = await getGit();
+    const dir = dirFor(project.id);
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    let tree: Array<{ type: string; path: string; oid: string }>;
+    try {
+      tree = (await git.readTree({ fs, dir, oid: head, filepath: "photos" })).tree;
+    } catch {
+      return referencedFileKeys(project).size === 0; // no photos committed yet
+    }
+    const committed = new Map(tree.filter((e) => e.type === "blob").map((e) => [e.path, e.oid]));
+    for (const fileKey of referencedFileKeys(project)) {
+      const oid = committed.get(fileKey);
+      if (!oid) return false; // new file never committed
+      const live = await getFile(project.id, fileKey);
+      if (!live) return false;
+      const liveFp = await contentFingerprint(live);
+      const committedFp = contentFingerprintBytes((await git.readBlob({ fs, dir, oid })).blob);
+      if (liveFp !== committedFp) return false;
+    }
+    return true;
+  } catch {
+    return false; // unreadable history → assume changed, commit
+  }
+}
+
 export function defaultCommitMessage(project: Project): string {
   const photos = project.species.reduce((n, s) => n + s.photos.length, 0);
   return `Autosave — ${project.species.length} species, ${photos} photos`;
+}
+
+/** Every file key a species' photos reference — the still and, when the slot
+ *  carries moving media, its clip. Commits, restores, and cleanup must treat
+ *  both, or a restore silently deletes clips. */
+function referencedFileKeys(project: Project): Set<string> {
+  const keys = new Set<string>();
+  for (const s of project.species) {
+    for (const p of s.photos) {
+      if (p.fileKey) keys.add(p.fileKey);
+      if (p.animation?.fileKey) keys.add(p.animation.fileKey);
+    }
+  }
+  return keys;
 }
 
 async function commitAll(
@@ -220,14 +287,17 @@ async function commitAll(
 
   for (const species of project.species) {
     for (const photo of species.photos) {
-      const key = `${project.id}/${photo.fileKey}`;
-      let blob = files?.get(photo.fileKey);
-      if (!blob) blob = await getFile(project.id, photo.fileKey);
-      if (!blob) continue;
-      const content = await contentFingerprint(blob);
-      if (!force && writtenFingerprints.get(key) === content) continue; // unchanged photo
-      await writeFile(`photos/${photo.fileKey}`, new Uint8Array(await blobToArrayBuffer(blob)));
-      writtenFingerprints.set(key, content);
+      for (const fileKey of [photo.fileKey, photo.animation?.fileKey]) {
+        if (!fileKey) continue;
+        const key = `${project.id}/${fileKey}`;
+        let blob = files?.get(fileKey);
+        if (!blob) blob = await getFile(project.id, fileKey);
+        if (!blob) continue;
+        const content = await contentFingerprint(blob);
+        if (!force && writtenFingerprints.get(key) === content) continue; // unchanged photo
+        await writeFile(`photos/${fileKey}`, new Uint8Array(await blobToArrayBuffer(blob)));
+        writtenFingerprints.set(key, content);
+      }
     }
   }
 
@@ -264,11 +334,17 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
   }
 }
 
-/** Restore a version: reads the commit's project + photos straight out of
- *  the object store and swaps them into the live stores. The working tree
- *  and HEAD are never touched — the caller saves the returned project and
- *  commits it as a normal commit on top, so every version stays reachable
- *  (checking out would have detached HEAD and orphaned newer commits). */
+/** Restore a version: reads the commit's project + media straight out of
+ *  the object store and swaps them into the live stores atomically (files
+ *  and record in one IndexedDB transaction — a partial failure changes
+ *  nothing). The working tree and HEAD are never touched: the caller commits
+ *  the restored state as a normal commit on top, so every version stays
+ *  reachable (checking out would have detached HEAD and orphaned newer
+ *  commits).
+ *
+ *  The restored project keeps the LIVE deck id — history may predate an id
+ *  rename, and saving the historical id would recreate the record/file
+ *  mismatch the rename migration exists to prevent. */
 export async function restoreVersion(
   projectId: string,
   oid: string,
@@ -281,36 +357,29 @@ export async function restoreVersion(
   const project = migrateProject(
     JSON.parse(new TextDecoder().decode(projectJson)) as Project,
   );
+  project.id = projectId;
 
-  // The commit's photo blobs, keyed by their in-project fileKey.
-  const photoBlobs = new Map<string, Uint8Array>();
+  // Read every media file the version references BEFORE touching anything.
+  const files = new Map<string, ArrayBuffer>();
   try {
     const { tree } = await git.readTree({ fs, dir, oid, filepath: "photos" });
     for (const entry of tree) {
       if (entry.type !== "blob") continue;
       try {
-        photoBlobs.set(entry.path, (await git.readBlob({ fs, dir, oid: entry.oid })).blob);
+        const { blob } = await git.readBlob({ fs, dir, oid: entry.oid });
+        files.set(entry.path, blob.slice().buffer as ArrayBuffer);
       } catch {
-        // A corrupt/missing object shouldn't fail the whole restore.
+        // A corrupt/missing object just means that file restores missing —
+        // validation flags dangling references at export time.
       }
     }
   } catch {
-    // No photos/ tree — a version before photos existed, or an empty deck.
+    // No photos/ tree — a version before media existed, or an empty deck.
   }
 
-  // Import the restored blobs BEFORE dropping anything: if this fails
-  // partway, the live store still holds its previous contents.
-  for (const [key, data] of photoBlobs) {
-    await putFile(projectId, key, new Blob([data as BlobPart], { type: mimeForFileKey(key) }));
-  }
-  const kept = new Set<string>();
-  for (const s of project.species) for (const p of s.photos) kept.add(p.fileKey);
-  const { listFileKeys } = await import("./store");
-  for (const key of await listFileKeys(projectId)) {
-    if (!kept.has(key)) await deleteFile(projectId, key);
-  }
+  await restoreSnapshot(projectId, files, referencedFileKeys(project), project);
 
-  // Force the next commit to rewrite the manifest and photos (history keeps
+  // Force the next commit to rewrite the manifest and media (history keeps
   // the full trail as a normal commit on HEAD).
   for (const [mapKey] of [...writtenFingerprints]) {
     if (mapKey.startsWith(`${projectId}/`)) writtenFingerprints.delete(mapKey);
