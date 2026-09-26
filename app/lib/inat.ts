@@ -132,8 +132,14 @@ function pace<T>(task: () => Promise<T>): Promise<T> {
   return run as Promise<T>;
 }
 
-/** iNat API GET with IndexedDB cache, retry and circuit breaker. */
-export async function inatGet<T>(endpoint: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
+/** iNat API GET with IndexedDB cache, retry and circuit breaker. Pass
+ *  `signal` to cancel — an aborted request neither retries nor counts
+ *  against the breaker. */
+export async function inatGet<T>(
+  endpoint: string,
+  params: Record<string, string | number | boolean | undefined> = {},
+  signal?: AbortSignal,
+): Promise<T> {
   const url = new URL(endpoint, API_BASE);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) url.searchParams.set(k, String(v));
@@ -144,12 +150,13 @@ export async function inatGet<T>(endpoint: string, params: Record<string, string
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     if (isBreakerOpen()) {
       throw lastErr ?? new Error("iNaturalist is temporarily unavailable — try again in a minute.");
     }
     try {
       const json = await pace(async () => {
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const res = await fetch(url, { headers: { Accept: "application/json" }, signal });
         if (res.status === 429 || res.status >= 500) {
           const retryAfter = Number(res.headers.get("retry-after"));
           const backoff = Number.isFinite(retryAfter) && retryAfter > 0
@@ -169,6 +176,8 @@ export async function inatGet<T>(endpoint: string, params: Record<string, string
       await putCachedApi(cacheKey, json);
       return json;
     } catch (err) {
+      // Abort: give up immediately — the caller moved on.
+      if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) throw err;
       lastErr = err;
       if (attempt < 3) await new Promise((r) => setTimeout(r, 3000 * 2 ** attempt));
     }
@@ -179,7 +188,7 @@ export async function inatGet<T>(endpoint: string, params: Record<string, string
 export async function autocompleteTaxon(q: string, signal?: AbortSignal): Promise<InatTaxon[]> {
   // Autocomplete queries bypass the permanent cache (users type as they
   // think); results are still cached via the same store.
-  const json = await inatGet<{ results: InatTaxon[] }>("taxa/autocomplete", { q, per_page: 10 });
+  const json = await inatGet<{ results: InatTaxon[] }>("taxa/autocomplete", { q, per_page: 10 }, signal);
   return json.results;
 }
 
@@ -215,7 +224,7 @@ export async function observations(q: ObservationQuery, signal?: AbortSignal): P
     radius: q.radius,
     place_id: q.placeId,
     quality_grade: q.qualityGrade && q.qualityGrade !== "any" ? q.qualityGrade : undefined,
-  });
+  }, signal);
   return json.results;
 }
 
