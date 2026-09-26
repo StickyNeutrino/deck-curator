@@ -22,7 +22,7 @@ export function meta({}: Route.MetaArgs) {
 
 export default function InfoPage() {
   const { projectId } = useParams();
-  const { project, notFound, loadError, update } = useProjectDoc(projectId);
+  const { project, notFound, loadError, saveError, update } = useProjectDoc(projectId);
 
   if (notFound) {
     return (
@@ -50,6 +50,11 @@ export default function InfoPage() {
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
+      {saveError && (
+        <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
+          {saveError}
+        </p>
+      )}
       <nav className="mb-4 text-sm">
         <Link to="/" className="underline" style={{ color: "var(--muted)" }}>
           ← All decks

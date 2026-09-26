@@ -22,7 +22,7 @@ export function meta({}: Route.MetaArgs) {
 export default function ReviewPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const { project, notFound, loadError, update } = useProjectDoc(projectId);
+  const { project, notFound, loadError, saveError, update } = useProjectDoc(projectId);
   const [blobMap, setBlobMap] = useState<Map<string, Blob>>(new Map());
   const [filter, setFilter] = useState<"all" | "flagged" | "issues" | "tag">("all");
   const [tagFilter, setTagFilter] = useState<string>("");
@@ -144,6 +144,11 @@ export default function ReviewPage() {
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8">
+      {saveError && (
+        <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
+          {saveError}
+        </p>
+      )}
       <ProjectTabs projectId={projectId ?? ""} active="review" />
       <header className="mt-6 mb-6">
         <h1 className="text-2xl font-bold">{project?.deckLabel ?? "Loading…"}</h1>

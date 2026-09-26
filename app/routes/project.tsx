@@ -16,7 +16,7 @@ export function meta({ params }: Route.MetaArgs) {
 export default function ProjectPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const { project, notFound, loadError, update } = useProjectDoc(projectId);
+  const { project, notFound, loadError, saveError, update } = useProjectDoc(projectId);
   const [showAdd, setShowAdd] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -76,6 +76,11 @@ export default function ProjectPage() {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
+      {saveError && (
+        <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
+          {saveError}
+        </p>
+      )}
       <nav className="mb-4 text-sm">
         <Link to="/" className="underline" style={{ color: "var(--muted)" }}>
           ← All decks

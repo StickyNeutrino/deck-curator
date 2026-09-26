@@ -109,7 +109,11 @@ export default function ExportPage() {
   if (!project) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-10">
-        <p>Loading…</p>
+        {saveError ? (
+          <p role="alert" style={{ color: "var(--danger)" }}>{saveError}</p>
+        ) : (
+          <p>Loading…</p>
+        )}
       </main>
     );
   }

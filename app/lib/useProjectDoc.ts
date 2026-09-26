@@ -20,6 +20,7 @@ export function useProjectDoc(projectId: string | undefined) {
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const dirtyRef = useRef(false);
 
   useEffect(() => {
@@ -56,12 +57,19 @@ export function useProjectDoc(projectId: string | undefined) {
   useEffect(() => {
     if (!project || !dirtyRef.current) return;
     dirtyRef.current = false;
-    void saveProject(project).catch((err) => {
-      // Retry on the next edit; keep the console signal for diagnosis.
-      dirtyRef.current = true;
-      console.error("Autosave failed:", err);
-    });
+    void (async () => {
+      try {
+        await saveProject(project);
+        setSaveError(null);
+      } catch (err) {
+        // A console line isn't enough for the curator — a silent autosave
+        // failure means their last edits exist only on this screen.
+        dirtyRef.current = true; // retry on the next edit
+        console.error("Autosave failed:", err);
+        setSaveError(`Couldn't save: ${err instanceof Error ? err.message : err}`);
+      }
+    })();
   }, [project]);
 
-  return { project, setProject, notFound, loadError, update };
+  return { project, setProject, notFound, loadError, saveError, update };
 }
