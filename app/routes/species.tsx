@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useMemo } from "react";
 import { getProject, saveProject, getFile, putFile, deleteFile, listFileKeys } from "~/lib/store";
-import type { Project, SpeciesEntry, CardLayout, PhotoSlot } from "~/lib/types";
+import type { Project, SpeciesEntry, CardLayout } from "~/lib/types";
 import { referencedFileKeys } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
@@ -14,7 +14,7 @@ import { BORDER_STYLES, searchSettingsOf, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { FrameModal } from "~/components/FrameModal";
-import { classifyMediaBlob, extractGifFrame, extractPosterFrame, isMediaFile } from "~/lib/motion";
+import { extractGifFrame, extractPosterFrame, isMediaFile } from "~/lib/motion";
 import { ReplacePicker } from "~/components/ReplacePicker";
 
 export function meta({}: Route.MetaArgs) {
@@ -469,57 +469,13 @@ function PhotosEditor({
     if (idx >= 0) dropAt(idx, idx + dir);
   };
 
-  const storeUpload = async (file: File, role: "main" | "secondary"): Promise<PhotoSlotLike> => {
-    const base = slugify(species.commonName || species.sciName || "photo");
-    // A unique suffix: two species can share a slug, and a position-derived
-    // key once overwrote the file another slot still referenced.
-    const fileKey = `${base}-${role}-${uuid().slice(0, 6)}.jpg`;
-    await putFile(projectId, fileKey, file);
-    return {
-      id: `upload:${uuid()}`,
-      role,
-      credit: { observer: "You", license: "all-rights-reserved" },
-      fileKey,
-      alt: file.name,
-    };
-  };
-
   const addUploads = async (files: File[]) => {
     let index = species.photos.length;
     for (const file of files) {
       if (index >= cap) break;
-      const mediaKind = isMediaFile(file);
       const role: "main" | "secondary" = index === 0 ? "main" : "secondary";
-      if (!mediaKind) {
-        const slot = await storeUpload(file, role);
-        onChange((d) => {
-          d.photos.push(slot);
-        });
-      } else {
-        // Moving media: store the clip, capture the first frame as the
-        // display still, then let the curator pick a different frame.
-        const base = slugify(species.commonName || species.sciName || "photo");
-        const clipKey = `${base}-anim-${uuid().slice(0, 6)}.${mediaKind === "gif" ? "gif" : "mp4"}`;
-        await putFile(projectId, clipKey, file);
-        let still: Blob;
-        try {
-          still =
-            mediaKind === "gif" ? await extractGifFrame(file, 0) : await extractPosterFrame(file, 0.1);
-        } catch (err) {
-          await deleteFile(projectId, clipKey);
-          alert(`Couldn't decode ${file.name}: ${err instanceof Error ? err.message : err}`);
-          continue;
-        }
-        const posterKey = `${base}-frame-${uuid().slice(0, 6)}.jpg`;
-        await putFile(projectId, posterKey, still);
-        const slot: PhotoSlot = {
-          id: `upload:${uuid()}`,
-          role,
-          credit: { observer: "You", license: "all-rights-reserved" },
-          fileKey: posterKey,
-          alt: file.name,
-          animation: { fileKey: clipKey, kind: mediaKind },
-        };
+      const slot = await storeUpload(file, role);
+      if (slot) {
         onChange((d) => {
           d.photos.push(slot);
         });
@@ -528,25 +484,67 @@ function PhotosEditor({
     }
   };
 
-  /** Uploads with a full card: replace the slot the curator picks. */
+  /** Store one uploaded file (still or moving media) and return its slot.
+   *  Moving media lands as clip + captured display still; decode failures
+   *  clean up after themselves and return null. */
+  const storeUpload = async (file: File, role: "main" | "secondary"): Promise<PhotoSlotLike | null> => {
+    const base = slugify(species.commonName || species.sciName || "photo");
+    // A unique suffix: two species can share a slug, and a position-derived
+    // key once overwrote the file another slot still referenced.
+    const mediaKind = isMediaFile(file);
+    if (!mediaKind) {
+      const fileKey = `${base}-${role}-${uuid().slice(0, 6)}.jpg`;
+      await putFile(projectId, fileKey, file);
+      return {
+        id: `upload:${uuid()}`,
+        role,
+        credit: { observer: "You", license: "all-rights-reserved" },
+        fileKey,
+        alt: file.name,
+      };
+    }
+    // Moving media: store the clip, capture the first frame as the display
+    // still, then let the curator pick a different frame.
+    const clipKey = `${base}-anim-${uuid().slice(0, 6)}.${mediaKind === "gif" ? "gif" : "mp4"}`;
+    await putFile(projectId, clipKey, file);
+    let still: Blob;
+    try {
+      still =
+        mediaKind === "gif" ? await extractGifFrame(file, 0) : await extractPosterFrame(file, 0.1);
+    } catch (err) {
+      await deleteFile(projectId, clipKey);
+      alert(`Couldn't decode ${file.name}: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+    const posterKey = `${base}-frame-${uuid().slice(0, 6)}.jpg`;
+    await putFile(projectId, posterKey, still);
+    return {
+      id: `upload:${uuid()}`,
+      role,
+      credit: { observer: "You", license: "all-rights-reserved" },
+      fileKey: posterKey,
+      alt: file.name,
+      animation: { fileKey: clipKey, kind: mediaKind },
+    };
+  };
+
+  /** Uploads with a full card: replace the slot the curator picks. Works
+   *  for stills AND moving media — the old files are garbage-collected at
+   *  the next save. */
   const replaceFirstUpload = async (files: File[], slotIndex: number) => {
     const file = files[0];
     const old = species.photos[slotIndex];
     if (!file || !old) return;
-    // Land the upload on a fresh key — overwriting the old fileKey in place
-    // changed the saved deck's photo before the draft was ever saved. The
-    // orphaned old file is garbage-collected at the next save.
-    const base = slugify(species.commonName || species.sciName || "photo");
-    const fileKey = `${base}-${old.role}-${uuid().slice(0, 6)}.jpg`;
-    await putFile(projectId, fileKey, file);
+    const fresh = await storeUpload(file, old.role);
+    if (!fresh) return;
     onChange((d) => {
       const slot = d.photos[slotIndex];
       if (slot) {
-        slot.id = `upload:${uuid()}`;
-        slot.credit = { observer: "You", license: "all-rights-reserved" };
-        slot.alt = file.name;
-        slot.fileKey = fileKey;
-        slot.animation = undefined; // a still upload replaces any clip
+        slot.id = fresh.id;
+        slot.credit = fresh.credit;
+        slot.alt = fresh.alt;
+        slot.fileKey = fresh.fileKey;
+        slot.animation = fresh.animation;
         slot.crop = undefined;
         slot.focus = undefined;
       }
@@ -725,6 +723,7 @@ interface PhotoSlotLike {
   credit: SpeciesEntry["photos"][number]["credit"];
   fileKey: string;
   alt?: string;
+  animation?: SpeciesEntry["photos"][number]["animation"];
 }
 
 function PhotoThumb({

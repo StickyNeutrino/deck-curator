@@ -108,7 +108,11 @@ export function FrameModal({
       if (!blob) throw new Error("Clip file missing.");
       let still: Blob;
       if (kind === "video") {
-        still = await extractPosterFrame(blob, time);
+        // The scrubber value is a FRACTION of the clip (0..0.999); the
+        // extractor takes seconds — pass the fraction of the real duration,
+        // or a 20s video captures frame 0.5s when the preview showed 10s.
+        const duration = videoRef.current?.duration || 1;
+        still = await extractPosterFrame(blob, time * duration);
       } else if (frames && frames.length) {
         const chosen = frames.reduce((best, f) =>
           Math.abs(f.index - Math.round((time || 0) * 10)) < Math.abs(best.index - Math.round((time || 0) * 10)) ? f : best,
