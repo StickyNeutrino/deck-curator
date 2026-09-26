@@ -1,11 +1,11 @@
 import type { Route } from "./+types/export";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router";
-import { getProject, saveProject } from "~/lib/store";
+import { useNavigate, useParams } from "react-router";
+import { getProject, listProjects, renameProject, saveProject } from "~/lib/store";
 import type { Project } from "~/lib/types";
 import { exportDeck } from "~/lib/export";
 import { validateProject, type ExportIssue } from "~/lib/validate";
-import { listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
@@ -20,16 +20,76 @@ export function meta({}: Route.MetaArgs) {
 
 export default function ExportPage() {
   const { projectId } = useParams();
+  const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [exporting, setExporting] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
-    void getProject(projectId).then((p) => setProject(p ?? null));
+    void getProject(projectId)
+      .then((p) => setProject(p ?? null))
+      .catch((err) => setSaveError(`Couldn't load the deck: ${err instanceof Error ? err.message : err}`));
   }, [projectId]);
 
   const issues = useMemo(() => (project ? validateProject(project) : []), [project]);
+
+  // The deck id is the store key for the record, the photo files, and the git
+  // repo — editing it per keystroke duplicated decks and broke every photo.
+  // It now commits as an explicit, validated rename that migrates everything.
+  const [idDraft, setIdDraft] = useState<string | null>(null);
+  const [labelDraft, setLabelDraft] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+
+  const commitLabel = useCallback(async () => {
+    if (!project || labelDraft === null) return;
+    const value = labelDraft;
+    setLabelDraft(null);
+    if (value === project.deckLabel) return;
+    const next = { ...project, deckLabel: value };
+    try {
+      await saveProject(next);
+      setProject(next);
+      setSaveError(null);
+    } catch (err) {
+      setSaveError(`Couldn't save the label: ${err instanceof Error ? err.message : err}`);
+    }
+  }, [project, labelDraft]);
+
+  const commitId = useCallback(async () => {
+    if (!project || idDraft === null) return;
+    const newId = idDraft.trim();
+    setIdDraft(null);
+    setIdentityError(null);
+    if (!newId || newId === project.id) return;
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(newId)) {
+      setIdentityError("Ids are lowercase letters, numbers, and dashes.");
+      return;
+    }
+    try {
+      const taken = (await listProjects()).some((p) => p.id === newId);
+      if (taken) {
+        setIdentityError(`Another deck already uses the id “${newId}” — pick a different one.`);
+        return;
+      }
+      setRenaming(true);
+      const next = { ...project, id: newId };
+      await renameProject(project.id, next); // files + record move atomically
+      try {
+        await renameRepo(project.id, newId); // the git history follows the deck
+      } catch {
+        setIdentityError("Deck renamed, but its version history could not be moved — new versions start from here.");
+      }
+      setProject(next);
+      navigate(`/project/${newId}/export`, { replace: true });
+    } catch (err) {
+      setIdentityError(`Rename failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setRenaming(false);
+    }
+  }, [project, idDraft, navigate]);
 
   if (!project) {
     return (
@@ -43,6 +103,11 @@ export default function ExportPage() {
     <main className="mx-auto max-w-3xl px-4 py-8">
       <ProjectTabs projectId={projectId ?? ""} active="export" />
       <h1 className="text-2xl font-bold mt-6 mb-2">Export deck</h1>
+      {saveError && (
+        <p className="text-sm mb-4" role="alert" style={{ color: "var(--danger)" }} data-testid="export-page-error">
+          {saveError}
+        </p>
+      )}
       <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>
         Produces a zip with manifest.json plus the photo files. Upload it in the flashcards app's
         menu to study it.
@@ -55,12 +120,11 @@ export default function ExportPage() {
             <span className="label">Deck id (slug)</span>
             <input
               className="field font-mono"
-              value={project.id}
-              onChange={(e) => {
-                const next = { ...project, id: e.target.value.trim() };
-                setProject(next);
-                void saveProject(next);
-              }}
+              value={idDraft ?? project.id}
+              disabled={renaming}
+              onChange={(e) => setIdDraft(e.target.value)}
+              onBlur={() => void commitId()}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitId(); } }}
               data-testid="deck-id"
             />
           </label>
@@ -68,18 +132,22 @@ export default function ExportPage() {
             <span className="label">Deck label</span>
             <input
               className="field"
-              value={project.deckLabel}
-              onChange={(e) => {
-                const next = { ...project, deckLabel: e.target.value };
-                setProject(next);
-                void saveProject(next);
-              }}
+              value={labelDraft ?? project.deckLabel}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onBlur={() => void commitLabel()}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitLabel(); } }}
             />
           </label>
         </div>
+        {identityError && (
+          <p className="text-sm mt-2" role="alert" style={{ color: "var(--danger)" }} data-testid="identity-error">
+            {identityError}
+          </p>
+        )}
         <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
           The id is the deck's unique key in the flashcards app; the label is what players see in
-          the menu (emoji welcome).
+          the menu (emoji welcome). Changing the id moves the deck's photos and version history
+          with it. Both fields commit when you click away or press Enter.
         </p>
       </section>
 

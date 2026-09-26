@@ -1,7 +1,7 @@
 import { unzipSync } from "fflate";
 import type { Project, SpeciesEntry, PhotoSlot, BorderStyle } from "./types";
 import { makeSpecies } from "./types";
-import { makeId } from "./ids";
+import { makeId, uniqueId } from "./ids";
 import { putFile } from "./store";
 import { blobToArrayBuffer } from "./blobUtils";
 
@@ -123,7 +123,10 @@ export function speciesFromManifest(manifest: Manifest): {
   return { species, categories };
 }
 
-export async function importDeckArchive(file: File): Promise<Project> {
+export async function importDeckArchive(
+  file: File,
+  opts: { existingIds?: Iterable<string> } = {},
+): Promise<Project> {
   const archiveBytes = new Uint8Array(await blobToArrayBuffer(file));
   let entries: Record<string, Uint8Array>;
   try {
@@ -145,7 +148,12 @@ export async function importDeckArchive(file: File): Promise<Project> {
     throw new Error(`"${file.name}" is not a deck archive (manifest is missing id/categories).`);
   }
 
-  const deckId = makeId(manifest.id || file.name.replace(/\.zip$/i, ""));
+  // The manifest's id is the deck's store key — never clobber an existing
+  // deck that already uses it; uniquify instead.
+  const deckId = uniqueId(
+    makeId(manifest.id || file.name.replace(/\.zip$/i, "")),
+    opts.existingIds ?? [],
+  );
   const now = new Date().toISOString();
   const project: Project = {
     schemaVersion: 1,

@@ -40,6 +40,56 @@ async function getGit() {
 
 export const dirFor = (projectId: string): string => `/${projectId}`;
 
+/** Move a project's git repository to a new id (deck id rename). Best-effort:
+ *  a deck that never committed has no repo to move. In-memory commit caches
+ *  are remapped so the next autosave doesn't recommit unchanged photos. */
+export async function renameRepo(oldId: string, newId: string): Promise<void> {
+  if (oldId === newId) return;
+  const fs = await getFs();
+  const from = dirFor(oldId);
+  const to = dirFor(newId);
+  try {
+    await fs.promises.stat(`${from}/.git`);
+  } catch {
+    return; // no repo yet — nothing to move
+  }
+  const copyDir = async (src: string, dest: string): Promise<void> => {
+    try { await fs.promises.stat(dest); } catch { await fs.promises.mkdir(dest, true); }
+    for (const entry of (await fs.promises.readdir(src)) as string[]) {
+      const srcFull = `${src}/${entry}`;
+      const destFull = `${dest}/${entry}`;
+      const stat = await fs.promises.stat(srcFull);
+      if ((stat as { isDirectory?: () => boolean }).isDirectory?.()) await copyDir(srcFull, destFull);
+      else await fs.promises.writeFile(destFull, await fs.promises.readFile(srcFull));
+    }
+  };
+  await copyDir(from, to);
+  await removeDir(from);
+  const oldPrefix = `${oldId}/`;
+  for (const [key, size] of [...writtenSizes]) {
+    if (key.startsWith(oldPrefix)) {
+      writtenSizes.set(`${newId}/${key.slice(oldPrefix.length)}`, size);
+      writtenSizes.delete(key);
+    }
+  }
+  const fingerprint = lastFingerprints.get(oldId);
+  if (fingerprint !== undefined) {
+    lastFingerprints.set(newId, fingerprint);
+    lastFingerprints.delete(oldId);
+  }
+}
+
+async function removeDir(path: string): Promise<void> {
+  const fs = await getFs();
+  for (const entry of (await fs.promises.readdir(path)) as string[]) {
+    const full = `${path}/${entry}`;
+    const stat = await fs.promises.stat(full);
+    if ((stat as { isDirectory?: () => boolean }).isDirectory?.()) await removeDir(full);
+    else await fs.promises.unlink(full);
+  }
+  await fs.promises.rmdir(path);
+}
+
 /** Track photo sizes so unchanged blobs aren't rewritten every commit. */
 const writtenSizes = new Map<string, number>();
 

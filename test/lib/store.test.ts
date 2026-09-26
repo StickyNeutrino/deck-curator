@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile } from "~/lib/store";
+import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 
@@ -60,5 +60,25 @@ describe("project store", () => {
     expect((await listFiles(project.id)).get("a.jpg")).toBeInstanceOf(Blob);
     await deleteFile(project.id, "a.jpg");
     expect(await getFile(project.id, "a.jpg")).toBeUndefined();
+  });
+
+  it("renames a project: record and files move to the new id", async () => {
+    const project = newProject("Rename Me");
+    await saveProject(project);
+    await putFile(project.id, "photo-main.jpg", new Blob(["jpeg"]));
+    await putFile("other", "keep.jpg", new Blob(["untouched"]));
+
+    const next = { ...structuredClone(project), id: "renamed-deck" };
+    await renameProject(project.id, next);
+
+    // The old record and its files are gone; the new ones are in place.
+    expect(await getProject(project.id)).toBeUndefined();
+    expect(await getFile(project.id, "photo-main.jpg")).toBeUndefined();
+    const loaded = await getProject("renamed-deck");
+    expect(loaded).toBeDefined();
+    expect(loaded!.deckLabel).toBe("Rename Me");
+    expect((await getFile("renamed-deck", "photo-main.jpg"))!.size).toBe(4);
+    // Other projects' files are untouched.
+    expect((await getFile("other", "keep.jpg"))!.size).toBe(9);
   });
 });

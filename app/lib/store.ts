@@ -69,6 +69,34 @@ export async function getProject(id: string): Promise<Project | undefined> {
   return record ? migrateProject(record) : undefined;
 }
 
+/** Rename a deck: move every file under the old `${id}/` prefix and swap the
+ *  project record — in one transaction, so a failure can't leave the files
+ *  under one id and the record under the other. The deck's git repository is
+ *  the caller's concern (versioning.renameRepo); the new id must not already
+ *  be taken (the callers check). */
+export async function renameProject(oldId: string, next: Project): Promise<void> {
+  if (oldId === next.id) {
+    await saveProject(next);
+    return;
+  }
+  const database = await db();
+  const tx = database.transaction(["projects", "files"], "readwrite");
+  const projects = tx.objectStore("projects");
+  const files = tx.objectStore("files");
+  const keys = (await files.getAllKeys()) as string[];
+  const moving = keys.filter((k) => k.startsWith(`${oldId}/`));
+  const buffers = (await Promise.all(moving.map((k) => files.get(k)))) as Array<ArrayBuffer | undefined>;
+  for (let i = 0; i < moving.length; i++) {
+    const buffer = buffers[i];
+    if (buffer == null) continue;
+    files.put(buffer, `${next.id}/${moving[i].slice(oldId.length + 1)}`);
+    files.delete(moving[i]);
+  }
+  projects.delete(oldId);
+  projects.put(structuredClone(next));
+  await tx.done;
+}
+
 export async function deleteProject(id: string): Promise<void> {
   const database = await db();
   const keys = (await database.getAllKeys("files")) as string[];

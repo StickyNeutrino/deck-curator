@@ -95,6 +95,23 @@ describe("deck archive import", () => {
     await expect(importDeckArchive(zip)).rejects.toThrow(/manifest\.json/);
   });
 
+  it("uniquifies the deck id when an existing deck already uses it", async () => {
+    // A hermetic manifest id — other tests in this file store files under
+    // "round-trip", so the collision target must be its own id.
+    const clash = { ...manifest, id: "clash" };
+    const zip = zipSync({
+      "manifest.json": strToU8(JSON.stringify(clash)),
+      "photos/dudleya-main.jpg": strToU8("main-jpeg-bytes"),
+    });
+    const file = new File([zip as unknown as BlobPart], "clash.zip", { type: "application/zip" });
+
+    const project = await importDeckArchive(file, { existingIds: ["clash"] });
+    expect(project.id).toBe("clash-2");
+    // Photos were stored under the uniquified id, not the manifest's.
+    expect(await getFile(project.id, "dudleya-main.jpg")).toBeInstanceOf(Blob);
+    expect(await getFile("clash", "dudleya-main.jpg")).toBeUndefined();
+  });
+
   it("treats legacy invasive:true as the red border", () => {
     const legacy = {
       id: "legacy",

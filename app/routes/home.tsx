@@ -1,10 +1,9 @@
 import type { Route } from "./+types/home";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router";
-import { listProjects, deleteProject, type ProjectSummary } from "~/lib/store";
+import { listProjects, deleteProject, saveProject, type ProjectSummary } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
-import { saveProject } from "~/lib/store";
-import { makeId } from "~/lib/ids";
+import { uniqueId } from "~/lib/ids";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -19,6 +18,7 @@ export default function Home() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const archiveInputRef = useRef<HTMLInputElement>(null);
@@ -27,11 +27,19 @@ export default function Home() {
     listProjects().then(setProjects).catch(() => setProjects([]));
   }, []);
 
-  const createProject = useCallback(() => {
+  const createProject = useCallback(async () => {
     const label = name.trim() || "Untitled deck";
     const project = newProject(label);
     project.description = description.trim();
-    void saveProject(project).then(() => navigate(`/project/${project.id}`));
+    try {
+      // The id is the store key: a reused deck name must uniquify instead of
+      // overwriting an existing deck.
+      project.id = uniqueId(project.id, (await listProjects()).map((p) => p.id));
+      await saveProject(project);
+      navigate(`/project/${project.id}`);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : String(err));
+    }
   }, [name, description, navigate]);
 
   const importArchive = useCallback(async (file: File) => {
@@ -39,7 +47,10 @@ export default function Home() {
     setImportError(null);
     try {
       const { importDeckArchive } = await import("~/lib/importDeck");
-      const project = await importDeckArchive(file);
+      // Importing an archive whose id matches an existing deck must not
+      // overwrite it — the importer uniquifies when told what's taken.
+      const existingIds = (await listProjects()).map((p) => p.id);
+      const project = await importDeckArchive(file, { existingIds });
       await saveProject(project);
       navigate(`/project/${project.id}`);
     } catch (err) {
@@ -115,6 +126,11 @@ export default function Home() {
                 Cancel
               </button>
             </div>
+            {createError && (
+              <p className="text-sm" role="alert" style={{ color: "var(--danger)" }} data-testid="create-error">
+                {createError}
+              </p>
+            )}
           </form>
         ) : (
           <div className="flex flex-wrap gap-2">

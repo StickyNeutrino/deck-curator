@@ -17,6 +17,15 @@ export function makeId(label: string): string {
   return slug || `deck-${Date.now().toString(36)}`;
 }
 
+/** Deck ids are store keys — a duplicate must never silently overwrite an
+ *  existing deck, so collide-avoid by appending "-2", "-3"…. */
+export function uniqueId(base: string, taken: Iterable<string>): string {
+  const takenSet = new Set(taken);
+  let candidate = base;
+  for (let n = 2; takenSet.has(candidate); n++) candidate = `${base}-${n}`;
+  return candidate;
+}
+
 /** Parse a ;- or ·-separated alt-names cell into a list. */
 export function parseAltNames(value: string | undefined | null): string[] {
   if (!value) return [];
