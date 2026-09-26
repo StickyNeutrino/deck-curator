@@ -132,6 +132,38 @@ function pace<T>(task: () => Promise<T>): Promise<T> {
   return run as Promise<T>;
 }
 
+/** Per-request timeout — a hung connection must not stall the global
+ *  pacing chain (and with it every later call) forever. */
+const FETCH_TIMEOUT_MS = 20_000;
+
+/** A signal that fires on caller abort OR the request timeout. `done()`
+ *  must run when the request settles, whichever way it goes. */
+function deadlineSignal(signal?: AbortSignal, ms = FETCH_TIMEOUT_MS): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("iNat request timed out", "TimeoutError")), ms);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    done: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
+/** Wait between retries; ends early when the caller aborts (the loop top
+ *  then throws before issuing another request). */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(t);
+      resolve();
+    }, { once: true });
+  });
+}
+
 /** iNat API GET with IndexedDB cache, retry and circuit breaker. Pass
  *  `signal` to cancel — an aborted request neither retries nor counts
  *  against the breaker. */
@@ -156,30 +188,36 @@ export async function inatGet<T>(
     }
     try {
       const json = await pace(async () => {
-        const res = await fetch(url, { headers: { Accept: "application/json" }, signal });
-        if (res.status === 429 || res.status >= 500) {
-          const retryAfter = Number(res.headers.get("retry-after"));
-          const backoff = Number.isFinite(retryAfter) && retryAfter > 0
-            ? retryAfter * 1000
-            : Math.min(60_000 * 2 ** consecutiveFailures, 300_000);
-          consecutiveFailures++;
-          setBreaker(backoff);
-          throw new Error(`HTTP ${res.status}`);
+        const { signal: fetchSignal, done } = deadlineSignal(signal);
+        try {
+          const res = await fetch(url, { headers: { Accept: "application/json" }, signal: fetchSignal });
+          if (res.status === 429 || res.status >= 500) {
+            const retryAfter = Number(res.headers.get("retry-after"));
+            const backoff = Number.isFinite(retryAfter) && retryAfter > 0
+              ? retryAfter * 1000
+              : Math.min(60_000 * 2 ** consecutiveFailures, 300_000);
+            consecutiveFailures++;
+            setBreaker(backoff);
+            throw new Error(`HTTP ${res.status}`);
+          }
+          if (!res.ok) {
+            const body = await res.text();
+            throw new Error(`iNat API error ${res.status}: ${body.slice(0, 200)}`);
+          }
+          return (await res.json()) as T;
+        } finally {
+          done();
         }
-        if (!res.ok) {
-          const body = await res.text();
-          throw new Error(`iNat API error ${res.status}: ${body.slice(0, 200)}`);
-        }
-        return (await res.json()) as T;
       });
       noteSuccess();
       await putCachedApi(cacheKey, json);
       return json;
     } catch (err) {
-      // Abort: give up immediately — the caller moved on.
+      // Abort: give up immediately — the caller moved on. A timeout is a
+      // retryable failure, not an abort.
       if (signal?.aborted || (err instanceof Error && err.name === "AbortError")) throw err;
       lastErr = err;
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 3000 * 2 ** attempt));
+      if (attempt < 3) await abortableDelay(3000 * 2 ** attempt, signal);
     }
   }
   throw lastErr;
