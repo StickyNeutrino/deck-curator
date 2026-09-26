@@ -10,8 +10,7 @@ import { blobToArrayBuffer } from "./blobUtils";
  * re-opening a project doesn't re-hit the API.
  *
  * Curation is long-running work, so the UI autosaves after every mutation;
- * "Save project file" additionally exports a portable .deckcurator.json
- * (see projectFile.ts).
+ * portable copies of a deck are the export archive (manifest + photos zip).
  */
 
 const DB_NAME = "deck-curator";

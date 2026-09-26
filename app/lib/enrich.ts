@@ -37,9 +37,13 @@ function isAutoSortable(s: SpeciesEntry): boolean {
 export async function enrichProject(
   project: Project,
   onProgress?: (done: number, total: number, label?: string) => void,
+  scopeIds?: string[],
 ): Promise<EnrichResult> {
   const next = structuredClone(project);
-  const all = next.species;
+  // Optional selection scope: when given, only those species are processed
+  // (the deck's other species are carried through untouched).
+  const scoped = scopeIds?.length ? new Set(scopeIds) : null;
+  const all = scoped ? next.species.filter((s) => scoped.has(s.id)) : next.species;
 
   // Phase 1: resolve names/families for species missing scientific info or
   // sitting in a category that doesn't exist.

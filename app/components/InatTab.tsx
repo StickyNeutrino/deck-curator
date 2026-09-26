@@ -1,12 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
-import type { Project, SpeciesEntry } from "~/lib/types";
+import type { Project, SpeciesEntry, NativeStatus } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
 import { candidatePhotos, pickDistinct, fetchTaxonDetail } from "~/lib/resolve";
 import { acquireMediaSlot } from "~/lib/media";
-import { isVideoMedia } from "~/lib/inat";
+import { isVideoMedia, taxaStatuses } from "~/lib/inat";
 import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
 import { inatGet, type InatTaxon } from "~/lib/inat";
+import { resolveInatPlace, establishmentToNative } from "~/lib/tools";
 import { slugify } from "~/lib/ids";
 import { putFile } from "~/lib/store";
 import { LocationPicker } from "~/components/LocationPicker";
@@ -48,6 +49,10 @@ interface TaxonResult {
   common: string | null;
   count: number;
   iconicTaxonId: number | null;
+  /** iNat place-checklist label (native / non-native), when the search
+   *  location resolved to an iNat place. Best-effort — may stay null. */
+  native: NativeStatus | null;
+  nativeSource?: string;
 }
 
 /** iNat photo ids already used by these entries (slot ids look like `inat:123`). */
@@ -169,7 +174,25 @@ export function InatTab({
           common: taxon.preferred_common_name ?? null,
           count,
           iconicTaxonId: taxon.iconic_taxon_id ?? null,
+          native: null as NativeStatus | null,
+          nativeSource: undefined as string | undefined,
         }));
+      // Best-effort pre-labeling: iNat's place checklist says which species
+      // are native / introduced in the search area (one cached batch call —
+      // and the labels ride along on cards added from the results).
+      if (loc?.lat != null && loc?.lng != null && found.length) {
+        const place = await resolveInatPlace(loc);
+        if (place) {
+          const rows = await taxaStatuses(found.map((r) => r.id), place.id);
+          for (const r of found) {
+            const native = establishmentToNative(rows.get(r.id)?.establishment_means);
+            if (native) {
+              r.native = native;
+              r.nativeSource = place.name;
+            }
+          }
+        }
+      }
       setResults(found);
       setStatus(
         found.length
@@ -233,6 +256,7 @@ export function InatTab({
           inatResolved: true,
           familyLatin,
           familyCommon,
+          native: result.native ?? "unknown",
           layout: photosPerCard === 1 ? "photo-single" : "photo-trio",
         });
         const base = slugify(result.name);
@@ -462,6 +486,23 @@ export function InatTab({
                 )}
                 <div className="text-xs" style={{ color: "var(--muted)" }}>
                   {r.count.toLocaleString()} observations
+                  {r.native && (
+                    <span
+                      className="ml-2 rounded-full border px-2 py-0.5"
+                      style={{
+                        borderColor: r.native === "non-native" ? "#b3261e" : "var(--border)",
+                        color: r.native === "non-native" ? "#b3261e" : undefined,
+                      }}
+                      title={
+                        r.nativeSource
+                          ? `per iNat — ${r.nativeSource} checklist`
+                          : undefined
+                      }
+                      data-testid={`native-badge-${r.id}`}
+                    >
+                      {r.native === "non-native" ? "Non-native" : "Native"}
+                    </span>
+                  )}
                   {cards.length > 0 && (
                     <span data-testid={`in-deck-${r.id}`}>
                       {" · "}in deck ({cards.length} card{cards.length > 1 ? "s" : ""})

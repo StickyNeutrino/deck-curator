@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { Project } from "~/lib/types";
-import { parseSpreadsheet } from "~/lib/importSpreadsheet";
+import { parseSpreadsheet, templateWorkbook } from "~/lib/importSpreadsheet";
 
 /** Tab 3: import a spreadsheet (the official template or any survey-style
  *  workbook with recognizable columns). */
@@ -59,6 +59,23 @@ export function FileTab({
       />
       <button className="btn-primary" onClick={() => inputRef.current?.click()} data-testid="choose-spreadsheet">
         Choose .xlsx / .csv file…
+      </button>{" "}
+      <button
+        className="btn-secondary"
+        data-testid="download-template"
+        onClick={() => {
+          const buf = templateWorkbook();
+          const blob = new Blob([buf as unknown as BlobPart], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "deck-curator-template.xlsx";
+          a.click();
+          URL.revokeObjectURL(a.href);
+        }}
+      >
+        Download spreadsheet template
       </button>
       <p className="text-sm mt-3" style={{ color: "var(--muted)" }}>
         Expected columns: <em>Common Name, Scientific Name, Alternate Common Names, Family

@@ -1,13 +1,11 @@
 import type { Route } from "./+types/project";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { getProject, saveProject } from "~/lib/store";
 import { AddSpeciesModal } from "~/components/AddSpeciesModal";
-import { EnrichButton } from "~/components/EnrichButton";
+import { ToolsMenu } from "~/components/ToolsMenu";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "~/lib/types";
-import { serializeProjectFile, parseProjectFile } from "~/lib/projectFile";
-import { makeId } from "~/lib/ids";
 import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
 import { allTags } from "~/components/TagsManager";
 
@@ -21,6 +19,7 @@ export default function ProjectPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!projectId) return;
@@ -58,6 +57,17 @@ export default function ProjectPage() {
     return () => clearTimeout(handle);
   }, [project]);
 
+  // Selection that survives table edits: dropped ids fall out via the
+  // intersection with project.species (see scopeIds below).
+  const toggleSelected = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   if (notFound) {
     return (
       <main className="mx-auto max-w-3xl px-4 py-10">
@@ -92,6 +102,9 @@ export default function ProjectPage() {
       </p>
       <SpeciesTable
         project={project}
+        selected={selected}
+        onToggleSelected={toggleSelected}
+        onSelectAll={setSelected}
         onAdd={() => setShowAdd(true)}
         onEdit={(id) => navigate(`/project/${project.id}/species/${id}`)}
         onChange={update}
@@ -104,33 +117,6 @@ export default function ProjectPage() {
           onClose={() => setShowAdd(false)}
         />
       )}
-      <div className="mt-8 flex flex-wrap gap-2 border-t pt-6" style={{ borderColor: "var(--border)" }}>
-        <EnrichButton project={project} onChange={update} />
-        <button
-          className="btn-primary"
-          data-testid="go-export"
-          onClick={() => navigate(`/project/${project.id}/export`)}
-        >
-          Review &amp; export deck…
-        </button>
-        <button
-          className="btn-secondary"
-          onClick={async () => {
-            const json = await serializeProjectFile(project);
-            const blob = new Blob([json], { type: "application/json" });
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = `${makeId(project.name)}.deckcurator.json`;
-            a.click();
-            URL.revokeObjectURL(a.href);
-          }}
-        >
-          Save project file
-        </button>
-        <LoadProjectButton
-          onLoaded={(loaded) => navigate(`/project/${loaded.id}`)}
-        />
-      </div>
     </main>
   );
 }
@@ -148,44 +134,20 @@ export async function downloadTemplate() {
   URL.revokeObjectURL(a.href);
 }
 
-export function LoadProjectButton({ onLoaded }: { onLoaded: (p: Project) => void }) {
-  const ref = useRef<HTMLInputElement>(null);
-  return (
-    <>
-      <input
-        ref={ref}
-        type="file"
-        accept=".json,.deckcurator,application/json"
-        className="hidden"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          try {
-            const project = await parseProjectFile(await file.text());
-            await saveProject(project);
-            onLoaded(project);
-          } catch (err) {
-            alert(`Could not open project file: ${err instanceof Error ? err.message : err}`);
-          }
-          e.target.value = "";
-        }}
-      />
-      <button className="btn-secondary" onClick={() => ref.current?.click()}>
-        Open project file…
-      </button>
-    </>
-  );
-}
-
-
 function SpeciesTable({
   project,
+  selected,
+  onToggleSelected,
+  onSelectAll,
   onAdd,
   onEdit,
   onChange,
   onDownloadTemplate,
 }: {
   project: Project;
+  selected: Set<string>;
+  onToggleSelected: (id: string) => void;
+  onSelectAll: (ids: Set<string>) => void;
   onAdd: () => void;
   onEdit: (id: string) => void;
   onChange: (f: (d: Project) => void) => void;
@@ -208,12 +170,28 @@ function SpeciesTable({
     return nameMatch && tagMatch;
   });
 
+  const visibleIds = useMemo(() => visible.map((s) => s.id), [visible]);
+  const selectedCount = useMemo(
+    () => project.species.filter((s) => selected.has(s.id)).length,
+    [project.species, selected],
+  );
+  const visibleSelected = visibleIds.filter((id) => selected.has(id)).length;
+  const allVisibleSelected = visibleIds.length > 0 && visibleSelected === visibleIds.length;
+  const someVisibleSelected = visibleSelected > 0 && !allVisibleSelected;
+
+  // Tools act on the selection (species still in the deck), or everything.
+  const scopeIds = useMemo(
+    () => [...selected].filter((id) => project.species.some((s) => s.id === id)),
+    [selected, project.species],
+  );
+
   return (
     <section>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button className="btn-primary" data-testid="add-species" onClick={onAdd}>
           + Add species
         </button>
+        <ToolsMenu project={project} onChange={onChange} scopeIds={scopeIds} />
         <input
           className="field"
           style={{ maxWidth: 220 }}
@@ -236,6 +214,17 @@ function SpeciesTable({
             </option>
           ))}
         </select>
+        {selectedCount > 0 && (
+          <button
+            className="text-xs underline"
+            style={{ color: "var(--muted)" }}
+            onClick={() => onSelectAll(new Set())}
+            data-testid="clear-selection"
+            title="Clear the selection — tools then apply to the whole deck"
+          >
+            {selectedCount} selected · clear
+          </button>
+        )}
         <span className="text-xs ml-auto" style={{ color: "var(--muted)" }}>
           {visible.length}/{project.species.length} species
         </span>
@@ -244,6 +233,24 @@ function SpeciesTable({
         <table className="w-full text-sm" data-testid="species-table">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>
+              <th className="px-3 py-2 w-8">
+                <input
+                  type="checkbox"
+                  ref={(el) => {
+                    if (el) el.indeterminate = someVisibleSelected;
+                  }}
+                  checked={allVisibleSelected}
+                  onChange={(e) => {
+                    const next = new Set(selected);
+                    if (e.target.checked) for (const id of visibleIds) next.add(id);
+                    else for (const id of visibleIds) next.delete(id);
+                    onSelectAll(next);
+                  }}
+                  aria-label="Select all filtered species"
+                  data-testid="select-all"
+                  title="Select all filtered species"
+                />
+              </th>
               <th className="px-3 py-2">Photos</th>
               <th className="px-3 py-2">Common name</th>
               <th className="px-3 py-2">Scientific name</th>
@@ -257,6 +264,15 @@ function SpeciesTable({
           <tbody className="divide-y" style={{ borderColor: "var(--border)" }}>
             {visible.map((s) => (
               <tr key={s.id} className="hover:bg-[var(--accent-soft)]" data-testid="species-row">
+                <td className="px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(s.id)}
+                    onChange={() => onToggleSelected(s.id)}
+                    aria-label={`Select ${s.commonName || s.sciName || "unnamed"}`}
+                    data-testid={`select-${s.id}`}
+                  />
+                </td>
                 <td className="px-3 py-2">
                   <PhotoThumbs species={s} />
                 </td>
@@ -337,7 +353,7 @@ function SpeciesTable({
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center" style={{ color: "var(--muted)" }}>
+                <td colSpan={9} className="px-3 py-8 text-center" style={{ color: "var(--muted)" }}>
                   {project.species.length === 0 ? (
                     <span data-testid="empty-species">
                       No species yet —{" "}

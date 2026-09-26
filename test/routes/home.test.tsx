@@ -24,7 +24,7 @@ describe("home route", () => {
     await screen.findByTestId("no-projects");
     expect(screen.getByRole("heading", { name: "Deck Curator" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New deck" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /template/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /template/i })).not.toBeInTheDocument();
   });
 
   it("creates a project and persists it", async () => {
@@ -40,19 +40,5 @@ describe("home route", () => {
     });
     const created = (await listProjects()).find((p) => p.name === "Mission Trails")!;
     expect((await getProject(created.id))!.deckLabel).toBe("Mission Trails");
-  });
-
-  it("downloads the spreadsheet template as an anchor click", async () => {
-    renderHome();
-    const origCreate = document.createElement.bind(document);
-    const click = vi.fn();
-    vi.spyOn(document, "createElement").mockImplementation((tag: string, ...rest: any[]) => {
-      const el = origCreate(tag, ...rest);
-      if (tag === "a") Object.defineProperty(el, "click", { value: click });
-      return el;
-    });
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: /template/i }));
-    expect(click).toHaveBeenCalled();
   });
 });

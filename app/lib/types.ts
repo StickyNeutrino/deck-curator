@@ -186,6 +186,11 @@ export interface DeckLocation {
   lat?: number;
   lng?: number;
   radiusKm?: number;
+  /** Smallest iNat place containing the location — the checklist scope used
+   *  to auto-label native/introduced status and conservation statuses.
+   *  Cached here so tool runs don't re-resolve it; regenerated when the
+   *  location changes. */
+  inatPlace?: { id: number; name: string; adminLevel?: number | null };
 }
 
 export function makeCategory(id: string, label: string): ProjectCategory {

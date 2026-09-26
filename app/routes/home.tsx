@@ -2,7 +2,7 @@ import type { Route } from "./+types/home";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router";
 import { listProjects, deleteProject, type ProjectSummary } from "~/lib/store";
-import { newProject, templateWorkbook } from "~/lib/importSpreadsheet";
+import { newProject } from "~/lib/importSpreadsheet";
 import { saveProject } from "~/lib/store";
 import { makeId } from "~/lib/ids";
 
@@ -48,18 +48,6 @@ export default function Home() {
       setImporting(false);
     }
   }, [navigate]);
-
-  const downloadTemplate = useCallback(() => {
-    const buf = templateWorkbook();
-    const blob = new Blob([buf as unknown as BlobPart], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "deck-curator-template.xlsx";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }, []);
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
@@ -133,9 +121,6 @@ export default function Home() {
             <button className="btn-primary" onClick={() => setCreating(true)}>
               New deck
             </button>
-            <button className="btn-secondary" onClick={downloadTemplate}>
-              Download spreadsheet template
-            </button>
             <input
               ref={archiveInputRef}
               type="file"
@@ -173,7 +158,7 @@ export default function Home() {
           </p>
         ) : projects.length === 0 ? (
           <p className="text-sm" style={{ color: "var(--muted)" }} data-testid="no-projects">
-            No decks yet. Create one to get started, or download the spreadsheet template above.
+            No decks yet. Create one to get started.
           </p>
         ) : (
           <ul className="divide-y rounded-lg border bg-white" style={{ borderColor: "var(--border)" }}>

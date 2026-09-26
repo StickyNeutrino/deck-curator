@@ -9,12 +9,13 @@ Deck Curator is a fully client-side web app. Everything — your species lists, 
 1. **Start a deck** — name it (this becomes the deck's id and label).
 2. **Bring in species**, three ways:
    - **Type or paste names** — one per line; scientific names are resolved on iNaturalist to fill in common name, family, and taxon id.
-   - **iNaturalist search** — pick a place by name (geocoded), on the map, or via coordinates, then list the most-observed species in that radius; add the ones you want, with auto-picked Creative Commons photos.
+   - **iNaturalist search** — pick a place by name (geocoded), on the map, or via coordinates, then list the most-observed species in that radius; add the ones you want, with auto-picked Creative Commons photos. Results carry iNat's native / non-native label from the area's place checklist.
    - **Spreadsheet** — the [template](#getting-started) or any survey-style workbook; category falls back to the sheet name, unknown columns are ignored.
-3. **Edit properties** — common name, scientific name, alternate names, family (common/latin), native status, border tag, rarity, category, and your own **tags** (phases, class sessions, units) for filtering — inline in the table or on the species page.
-4. **Choose photos** — per species, browse the top-voted CC-licensed iNaturalist photos, pin specific ones, or upload your own photos. Every photo carries its credit (observer + license), which is exported into the manifest and rendered by the app's credits page. The crop editor keeps the slot's aspect so photos are never distorted.
-5. **Review** — every card laid out front and back; flag cards that need another pass, filter down to them, and click through to edit.
-6. **Review & export** — a validation report (duplicate names, missing photos/licenses/credits), the deck's **git version history** (auto-committed; restore any version), and the archive build: `manifest.json` + `photos/` + `.git/`.
+3. **Run deck tools** — the 🛠 Tools menu (also on the species page toolbar) applies batch actions to the whole deck or to checkbox-selected species: fill missing names/families and re-sort categories from iNat's taxonomy, label native vs. introduced from iNat's place checklists (optionally flagging introduced species with the red invasive border), and label conservation status from NatureServe/IUCN listings (optionally flagging threatened species with the blue notable border). Tools only fill empty fields and report anything they'd have changed differently.
+4. **Edit properties** — common name, scientific name, alternate names, family (common/latin), native status, border tag, rarity, category, and your own **tags** (phases, class sessions, units) for filtering — inline in the table or on the species page.
+5. **Choose photos** — per species, browse the top-voted CC-licensed iNaturalist photos, pin specific ones, or upload your own photos. Every photo carries its credit (observer + license), which is exported into the manifest and rendered by the app's credits page. The crop editor keeps the slot's aspect so photos are never distorted.
+6. **Review** — every card laid out front and back; flag cards that need another pass, filter down to them, and click through to edit.
+7. **Review & export** — a validation report (duplicate names, missing photos/licenses/credits), the deck's **git version history** (auto-committed; restore any version), and the archive build: `manifest.json` + `photos/` + `.git/`.
 
 ## Card layouts
 
@@ -67,7 +68,7 @@ it.
 
 ## Privacy
 
-No accounts, no analytics, no server. Projects autosave to IndexedDB in your browser; "Save project file" exports a portable `.deckcurator.json` (with photos embedded) you can share or move between machines.
+No accounts, no analytics, no server. Projects autosave to IndexedDB in your browser; nothing leaves it except the requests you can see — iNaturalist API lookups (species, photos, place checklists) and OpenStreetMap geocoding. Decks are shared or moved between machines as exported zip archives (re-importable, photos and history included).
 
 ## License
 

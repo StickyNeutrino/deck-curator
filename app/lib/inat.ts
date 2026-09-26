@@ -1,4 +1,5 @@
 import { getCachedApi, putCachedApi } from "./store";
+import { chunkTaxaIds } from "./taxaBatch";
 
 /**
  * Browser iNaturalist client, ported from the Healthy Canyons generation
@@ -11,6 +12,26 @@ import { getCachedApi, putCachedApi } from "./store";
  */
 
 const API_BASE = "https://api.inaturalist.org/v1/";
+
+/** Where a taxon stands in a place's checklist (iNat "establishment means").
+ *  Only some values are known: native, introduced, endemic. */
+export interface InatEstablishment {
+  establishment_means: string;
+  place?: { id: number; name: string; display_name?: string; admin_level?: number };
+}
+
+/** A place-scoped conservation status (NatureServe, IUCN, state lists…).
+ *  `iucn` is iNat's IUCN-equivalent rating: 0 = not evaluated, then 5/10/20/
+ *  30/40/50/60/70 for least-concern → extinct. */
+export interface InatConservationStatus {
+  status: string;
+  status_name?: string;
+  authority?: string;
+  iucn?: number;
+  place?: { id: number; name: string; display_name?: string };
+  description?: string | null;
+  url?: string;
+}
 
 export interface InatTaxon {
   id: number;
@@ -26,6 +47,9 @@ export interface InatTaxon {
   matched_term?: string;
   current_synonymous_taxon_ids?: number[] | null;
   observations_count?: number;
+  /** Present on place-scoped requests (taxa/{id}?place_id=X, or batched). */
+  establishment_means?: InatEstablishment | null;
+  conservation_status?: InatConservationStatus | null;
 }
 
 export interface InatPhoto {
@@ -198,13 +222,60 @@ export async function observations(q: ObservationQuery, signal?: AbortSignal): P
 export interface InatPlace {
   id: number;
   name: string;
-  admin_level: number;
-  bbox_area?: number;
+  admin_level: number | null;
+  display_name?: string;
+  bbox_area?: number | null;
+  place_type?: number | null;
 }
 
 export async function placesAutocomplete(q: string): Promise<InatPlace[]> {
   const json = await inatGet<{ results: InatPlace[] }>("places/autocomplete", { q, per_page: 10 });
   return json.results;
+}
+
+/**
+ * Places containing a point (or circle), iNat standard (admin) and community
+ * places both. `places/nearby` only supports a bounding box, and — important —
+ * only with `nelat/nelng/swlat/swlng`: plain `lat`/`lng` are silently ignored.
+ * Standard results come back ordered largest → smallest.
+ */
+export async function nearbyPlaces(center: { lat: number; lng: number; radiusKm?: number }): Promise<InatPlace[]> {
+  const dLat = (center.radiusKm ?? 1) / 111.32;
+  const dLng = (center.radiusKm ?? 1) / (111.32 * Math.max(0.01, Math.cos((center.lat * Math.PI) / 180)));
+  const json = await inatGet<{
+    results: { standard?: InatPlace[]; community?: InatPlace[] };
+  }>("places/nearby", {
+    nelat: center.lat + dLat,
+    nelng: center.lng + dLng,
+    swlat: center.lat - dLat,
+    swlng: center.lng - dLng,
+    per_page: 20,
+  });
+  return [...(json.results.standard ?? []), ...(json.results.community ?? [])];
+}
+
+/**
+ * Place-scoped establishment means + conservation status for many taxa, one
+ * cached request per batch (`GET taxa/{id,id,…}?place_id=X` — iNat resolves
+ * each taxon against the most specific checklist containing the place).
+ * Batches are 30 ids — iNat rejects more with "Too many IDs" (see
+ * taxaBatch.ts, which verified the limit).
+ */
+export async function taxaStatuses(
+  ids: number[],
+  placeId?: number,
+): Promise<Map<number, Pick<InatTaxon, "id" | "establishment_means" | "conservation_status">>> {
+  const out = new Map<number, Pick<InatTaxon, "id" | "establishment_means" | "conservation_status">>();
+  const unique = [...new Set(ids)].filter((n) => Number.isFinite(n));
+  for (const chunk of chunkTaxaIds(unique)) {
+    const json = await inatGet<{ results: InatTaxon[] }>(`taxa/${chunk.join(",")}`, {
+      place_id: placeId,
+    });
+    for (const t of json.results) {
+      out.set(t.id, { id: t.id, establishment_means: t.establishment_means, conservation_status: t.conservation_status });
+    }
+  }
+  return out;
 }
 
 /** Resolve the original-size photo URL for an iNat photo record. */
