@@ -89,6 +89,7 @@ export async function renameProject(oldId: string, next: Project): Promise<void>
   const clash = await projects.get(next.id);
   if (clash != null) {
     tx.abort();
+    await tx.done.catch(() => undefined); // the expected AbortError, not ours to propagate
     throw new Error(`Another deck already uses the id “${next.id}”.`);
   }
   const keys = (await files.getAllKeys()) as string[];
