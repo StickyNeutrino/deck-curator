@@ -2,7 +2,7 @@ import { unzipSync } from "fflate";
 import type { Project, SpeciesEntry, PhotoSlot, BorderStyle } from "./types";
 import { makeSpecies } from "./types";
 import { makeId, uniqueId } from "./ids";
-import { putFile } from "./store";
+import { putFile, mimeForFileKey } from "./store";
 import { blobToArrayBuffer } from "./blobUtils";
 
 /**
@@ -191,7 +191,7 @@ export async function importDeckArchive(
       usedFileKeys.add(fileKey);
       slot.fileKey = fileKey;
       if (raw) {
-        await putFile(project.id, fileKey, new Blob([raw as BlobPart], { type: "image/jpeg" }));
+        await putFile(project.id, fileKey, new Blob([raw as BlobPart], { type: mimeForFileKey(fileKey) }));
       }
     }
     project.species.push(entry);

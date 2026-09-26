@@ -62,6 +62,21 @@ describe("project store", () => {
     expect(await getFile(project.id, "a.jpg")).toBeUndefined();
   });
 
+  it("preserves each blob's MIME type through the store", async () => {
+    const project = newProject("Mime");
+    await saveProject(project);
+    // Clips must keep video/gif types so classification still works after a
+    // round trip; typeless blobs fall back to jpeg.
+    await putFile(project.id, "clip.mp4", new Blob(["bytes"], { type: "video/mp4" }));
+    await putFile(project.id, "pic.png", new Blob(["bytes"], { type: "image/png" }));
+    await putFile(project.id, "plain.jpg", new Blob(["bytes"]));
+    expect((await getFile(project.id, "clip.mp4"))!.type).toBe("video/mp4");
+    expect((await getFile(project.id, "pic.png"))!.type).toBe("image/png");
+    expect((await getFile(project.id, "plain.jpg"))!.type).toBe("image/jpeg");
+    const listed = await listFiles(project.id);
+    expect(listed.get("clip.mp4")!.type).toBe("video/mp4");
+  });
+
   it("renames a project: record and files move to the new id", async () => {
     const project = newProject("Rename Me");
     await saveProject(project);

@@ -2,7 +2,7 @@ import type { Project } from "./types";
 import { migrateProject } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
-import { getFile, putFile, deleteFile } from "./store";
+import { getFile, putFile, deleteFile, mimeForFileKey } from "./store";
 import "./polyfills";
 
 /**
@@ -301,7 +301,7 @@ export async function restoreVersion(
   // Import the restored blobs BEFORE dropping anything: if this fails
   // partway, the live store still holds its previous contents.
   for (const [key, data] of photoBlobs) {
-    await putFile(projectId, key, new Blob([data as BlobPart], { type: "image/jpeg" }));
+    await putFile(projectId, key, new Blob([data as BlobPart], { type: mimeForFileKey(key) }));
   }
   const kept = new Set<string>();
   for (const s of project.species) for (const p of s.photos) kept.add(p.fileKey);

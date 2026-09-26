@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { stripRankMarkers, looksLikeSciName, pickDistinct, chooseTaxon } from "~/lib/resolve";
-import type { InatTaxon, InatObservation } from "~/lib/inat";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { stripRankMarkers, looksLikeSciName, pickDistinct, chooseTaxon, downloadPhoto } from "~/lib/resolve";
+import type { InatTaxon, InatObservation, InatPhoto } from "~/lib/inat";
 
 describe("stripRankMarkers", () => {
   it("removes ssp./var./f. markers for iNat queries", () => {
@@ -80,5 +80,49 @@ describe("pickDistinct", () => {
       { photo: {} as any, obs: obs(2, "alice") },
     ];
     expect(pickDistinct(candidates, 2).map((p) => p.obs.id)).toEqual([1, 2]);
+  });
+});
+
+describe("downloadPhoto", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const photo = (over: Partial<InatPhoto> = {}): InatPhoto =>
+    ({ id: 1, license_code: "cc-by", url: "https://inaturalist.org/x/medium.jpg", ...over }) as InatPhoto;
+
+  function stubFetch(bodies: Array<{ type: string; bytes: number }>) {
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      const body = bodies[Math.min(call, bodies.length - 1)];
+      call++;
+      return {
+        ok: true,
+        headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? body.type : null) },
+        arrayBuffer: async () => new ArrayBuffer(body.bytes),
+      };
+    }));
+  }
+
+  it("keeps the response's content type so clips classify correctly", async () => {
+    stubFetch([{ type: "video/mp4", bytes: 10000 }]);
+    const blob = await downloadPhoto(photo());
+    expect(blob.type).toBe("video/mp4");
+  });
+
+  it("falls back to jpeg when the server sends no content type", async () => {
+    stubFetch([{ type: "", bytes: 10000 }]);
+    const blob = await downloadPhoto(photo());
+    expect(blob.type).toBe("image/jpeg");
+  });
+
+  it("skips tiny responses and tries the next variant", async () => {
+    stubFetch([
+      { type: "image/jpeg", bytes: 100 }, // too small — a thumbnail or error page
+      { type: "image/jpeg", bytes: 10000 },
+    ]);
+    const blob = await downloadPhoto(photo());
+    expect(blob.type).toBe("image/jpeg");
+    expect(blob.size).toBe(10000);
   });
 });

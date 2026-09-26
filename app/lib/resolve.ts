@@ -231,7 +231,11 @@ export async function downloadPhoto(photo: InatPhoto): Promise<Blob> {
       if (!res.ok) continue;
       const buf = await res.arrayBuffer();
       if (buf.byteLength < 5000) continue;
-      return new Blob([buf], { type: "image/jpeg" });
+      // The content type drives classification downstream (photo vs
+      // animated GIF vs video clip) — hardcoding jpeg turned every clip
+      // into a "still" and video bytes into broken <img> content.
+      const type = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
+      return new Blob([buf], { type });
     } catch (err) {
       lastErr = err;
     }

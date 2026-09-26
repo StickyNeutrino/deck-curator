@@ -122,18 +122,46 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-/** Store one photo file for a project. Blobs are stored as ArrayBuffers —
- *  structured-clone-safe in every IndexedDB implementation. */
+/** Store one photo file for a project. The blob's MIME type rides along so
+ *  GIF/video clips and non-jpeg uploads survive the round trip; the bytes
+ *  themselves are stored as an ArrayBuffer — structured-clone-safe in every
+ *  IndexedDB implementation. */
 export async function putFile(projectId: string, key: string, blob: Blob): Promise<void> {
   const database = await db();
   const buffer = await blobToArrayBuffer(blob);
-  await database.put("files", buffer, fileKey(projectId, key));
+  await database.put("files", { buffer, type: blob.type || "image/jpeg" }, fileKey(projectId, key));
+}
+
+interface StoredFile {
+  buffer: ArrayBuffer;
+  type: string;
+}
+
+/** Re-wrap a stored value as a Blob, tolerating records written before
+ *  types were kept (bare ArrayBuffers, assumed jpeg). */
+function storedToBlob(value: unknown): Blob | undefined {
+  if (value == null) return undefined;
+  if (value instanceof ArrayBuffer) return new Blob([value], { type: "image/jpeg" });
+  const record = value as StoredFile;
+  if (!record.buffer) return undefined;
+  return new Blob([record.buffer], { type: record.type || "image/jpeg" });
+}
+
+/** Best-effort MIME type for a stored file name — archives and git blobs
+ *  carry no content-type, so the extension is all we have. */
+export function mimeForFileKey(key: string): string {
+  if (/\.png$/i.test(key)) return "image/png";
+  if (/\.gif$/i.test(key)) return "image/gif";
+  if (/\.webp$/i.test(key)) return "image/webp";
+  if (/\.mp4$/i.test(key)) return "video/mp4";
+  if (/\.webm$/i.test(key)) return "video/webm";
+  if (/\.mov$/i.test(key)) return "video/quicktime";
+  return "image/jpeg";
 }
 
 export async function getFile(projectId: string, key: string): Promise<Blob | undefined> {
   const database = await db();
-  const buffer = (await database.get("files", fileKey(projectId, key))) as ArrayBuffer | undefined;
-  return buffer ? new Blob([buffer], { type: "image/jpeg" }) : undefined;
+  return storedToBlob(await database.get("files", fileKey(projectId, key)));
 }
 
 export async function deleteFile(projectId: string, key: string): Promise<void> {
@@ -149,8 +177,8 @@ export async function listFiles(projectId: string): Promise<Map<string, Blob>> {
   const out = new Map<string, Blob>();
   for (const key of keys) {
     if (!key.startsWith(prefix)) continue;
-    const buffer = (await database.get("files", key)) as ArrayBuffer;
-    out.set(key.slice(prefix.length), new Blob([buffer], { type: "image/jpeg" }));
+    const blob = storedToBlob(await database.get("files", key));
+    if (blob) out.set(key.slice(prefix.length), blob);
   }
   return out;
 }
