@@ -53,7 +53,7 @@ See **docs/DECK_FORMAT.md**. A curated deck archive is:
 ```
 <deck-id>.zip
 ├── manifest.json   # cardFormat: "data", categories, cards, photos, credits
-├── photos/         # <slug>-main.jpg, <slug>-secondary-N.jpg
+├── photos/         # <slug>-<role>-<unique>.jpg, referenced by the manifest
 └── .git/           # the deck's full version history (see below)
 ```
 

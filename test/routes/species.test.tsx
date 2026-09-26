@@ -83,4 +83,34 @@ describe("species route", () => {
     renderSpecies(project.id, "no-such-id");
     await screen.findByText("Species not found.");
   });
+
+  it("keeps a removed photo's blob in the store until the draft is saved", async () => {
+    const user = userEvent.setup();
+    const { project, entry } = await makeFixture();
+    // Give the species a stored photo.
+    entry.photos.push({
+      id: "upload:fix",
+      role: "main",
+      credit: { observer: "You", license: "all-rights-reserved" },
+      fileKey: "dwarf-nettle-main.jpg",
+    });
+    await saveProject(project);
+    const { putFile, getFile } = await import("~/lib/store");
+    await putFile(project.id, "dwarf-nettle-main.jpg", new Blob(["jpeg-bytes"]));
+
+    renderSpecies(project.id, entry.id);
+    await user.click(await screen.findByRole("button", { name: "remove" }));
+
+    // Not saved yet: the blob must still exist (Cancel must be able to
+    // restore the persisted deck exactly as it was).
+    expect(await getFile(project.id, "dwarf-nettle-main.jpg")).toBeInstanceOf(Blob);
+
+    await user.click(screen.getByTestId("save-species"));
+    await waitFor(async () => {
+      const loaded = (await getProject(project.id))!;
+      expect(loaded.species[0].photos).toHaveLength(0);
+      // Only after the save is the blob really gone.
+      expect(await getFile(project.id, "dwarf-nettle-main.jpg")).toBeUndefined();
+    });
+  });
 });

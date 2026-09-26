@@ -155,6 +155,14 @@ export async function listFiles(projectId: string): Promise<Map<string, Blob>> {
   return out;
 }
 
+/** Just the fileKeys of a project's files — no blobs read. */
+export async function listFileKeys(projectId: string): Promise<Set<string>> {
+  const database = await db();
+  const keys = (await database.getAllKeys("files")) as string[];
+  const prefix = `${projectId}/`;
+  return new Set(keys.filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)));
+}
+
 // ---------- iNat API cache ----------
 
 /** iNat responses are stable enough to cache indefinitely within the browser

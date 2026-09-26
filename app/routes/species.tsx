@@ -27,6 +27,16 @@ export default function SpeciesPage() {
   const [draft, setDraft] = useState<SpeciesEntry | null>(null);
   const [saved, setSaved] = useState(false);
   const [cropSlot, setCropSlot] = useState<{ slot: SpeciesEntry["photos"][number]; index: number } | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Photo blobs whose slots were removed/replaced while editing. Files are
+  // only actually deleted once the draft is saved — deleting earlier would
+  // leave the persisted project pointing at missing blobs if the curator
+  // cancels. (Orphans after Cancel are harmless storage dust.)
+  const pendingDeletions = useRef<Set<string>>(new Set());
+  const queueDeletion = useCallback((keys: Array<string | undefined | null>) => {
+    for (const key of keys) if (key) pendingDeletions.current.add(key);
+  }, []);
 
   // Where "Save & close" / "Cancel" should return to — e.g. the review page
   // with the "needs fixing" filter active. Falls back to the deck list.
@@ -46,9 +56,13 @@ export default function SpeciesPage() {
 
   const entry = project?.species.find((s) => s.id === speciesId) ?? null;
 
-  // Initialize the local draft once the project has loaded.
+  // Initialize (or, when navigating between species in place, reset) the
+  // local draft once the project has loaded.
   useEffect(() => {
-    if (entry && !draft) setDraft(structuredClone(entry));
+    if (entry && (!draft || draft.id !== entry.id)) {
+      pendingDeletions.current.clear(); // the saved project still owns those files
+      setDraft(structuredClone(entry));
+    }
   }, [entry, draft]);
 
   const update = useCallback((mutate: (d: SpeciesEntry) => void) => {
@@ -66,16 +80,37 @@ export default function SpeciesPage() {
     [projectId],
   );
 
+  // The photo browser reloads whenever its `settings` prop changes identity,
+  // so key the memo on the serialized settings instead of `project` (a fresh
+  // object on every keystroke-save). JSON round-trip is exact here: the
+  // settings are plain booleans/strings/arrays.
+  const inatSearchKey = project ? JSON.stringify(searchSettingsOf(project)) : "";
+  const inatSearchSettings = useMemo(
+    () => (project ? searchSettingsOf(project) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [inatSearchKey],
+  );
+
   const persist = useCallback(async (): Promise<Project | null> => {
     if (!draft) return null;
     const next = structuredClone(project!);
     const idx = next.species.findIndex((s) => s.id === draft.id);
     if (idx >= 0) next.species[idx] = structuredClone(draft);
-    await saveProject(next);
+    try {
+      await saveProject(next);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+      return null;
+    }
+    // The save is durable — now the removed/replaced blobs can really go.
+    const doomed = [...pendingDeletions.current];
+    pendingDeletions.current.clear();
+    await Promise.all(doomed.map((key) => deleteFile(projectId ?? "", key)));
     setProject(next);
     setSaved(true);
+    setSaveError(null);
     return next;
-  }, [draft, project]);
+  }, [draft, project, projectId]);
 
   if (!project) {
     return (
@@ -114,18 +149,24 @@ export default function SpeciesPage() {
             species={draft}
             projectId={projectId ?? ""}
             onChange={update}
+            queueDeletion={queueDeletion}
             onRequestCrop={(slot, index) => setCropSlot({ slot, index })}
           />
 
+          {saveError && (
+            <p className="text-sm mb-2" role="alert" style={{ color: "var(--danger)" }} data-testid="species-save-error">
+              Couldn't save: {saveError}
+            </p>
+          )}
           <div className="flex gap-2 mt-4">
             <button className="btn-primary" onClick={() => void persist()} data-testid="save-species">
               {saved ? "Saved ✓" : "Save"}
             </button>
             <button
               className="btn-secondary"
-              onClick={() => {
-                void persist().then(() => navigate(closeTarget));
-              }}
+              onClick={() => void persist().then((savedProject) => {
+                if (savedProject) navigate(closeTarget);
+              })}
             >
               Save &amp; close
             </button>
@@ -146,7 +187,13 @@ export default function SpeciesPage() {
         </aside>
       </div>
 
-      <InatPhotoBrowser species={draft} projectId={projectId ?? ""} settings={project ? searchSettingsOf(project) : undefined} onChange={update} />
+      <InatPhotoBrowser
+        species={draft}
+        projectId={projectId ?? ""}
+        settings={inatSearchSettings}
+        onChange={update}
+        queueDeletion={queueDeletion}
+      />
       {cropSlot && (
         <CropModal
           projectId={projectId ?? ""}
@@ -370,11 +417,13 @@ function PhotosEditor({
   species,
   projectId,
   onChange,
+  queueDeletion,
   onRequestCrop,
 }: {
   species: SpeciesEntry;
   projectId: string;
   onChange: (f: (d: SpeciesEntry) => void) => void;
+  queueDeletion: (keys: Array<string | undefined | null>) => void;
   onRequestCrop: (slot: SpeciesEntry["photos"][number], index: number) => void;
 }) {
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -385,10 +434,11 @@ function PhotosEditor({
   /** Pending uploads waiting for a "replace which photo?" decision. */
   const [pendingReplace, setPendingReplace] = useState<{ files: File[] } | null>(null);
 
-  const removePhoto = async (fileKey: string) => {
-    await deleteFile(projectId, fileKey);
+  const removePhoto = (slot: SpeciesEntry["photos"][number]) => {
+    // Defer the blob deletion to the save (see pendingDeletions).
+    queueDeletion([slot.fileKey, slot.animation?.fileKey]);
     onChange((d) => {
-      d.photos = d.photos.filter((p) => p.fileKey !== fileKey);
+      d.photos = d.photos.filter((p) => p.id !== slot.id);
     });
   };
 
@@ -413,14 +463,15 @@ function PhotosEditor({
     if (idx >= 0) dropAt(idx, idx + dir);
   };
 
-  const storeUpload = async (file: File, index: number): Promise<PhotoSlotLike> => {
-    const isMain = index === 0;
+  const storeUpload = async (file: File, role: "main" | "secondary"): Promise<PhotoSlotLike> => {
     const base = slugify(species.commonName || species.sciName || "photo");
-    const fileKey = `${base}-${isMain ? "main" : `secondary-${index}`}.jpg`;
+    // A unique suffix: two species can share a slug, and a position-derived
+    // key once overwrote the file another slot still referenced.
+    const fileKey = `${base}-${role}-${uuid().slice(0, 6)}.jpg`;
     await putFile(projectId, fileKey, file);
     return {
       id: `upload:${uuid()}`,
-      role: isMain ? "main" : "secondary",
+      role,
       credit: { observer: "You", license: "all-rights-reserved" },
       fileKey,
       alt: file.name,
@@ -432,8 +483,9 @@ function PhotosEditor({
     for (const file of files) {
       if (index >= cap) break;
       const mediaKind = isMediaFile(file);
+      const role: "main" | "secondary" = index === 0 ? "main" : "secondary";
       if (!mediaKind) {
-        const slot = await storeUpload(file, index);
+        const slot = await storeUpload(file, role);
         onChange((d) => {
           d.photos.push(slot);
         });
@@ -441,7 +493,7 @@ function PhotosEditor({
         // Moving media: store the clip, capture the first frame as the
         // display still, then let the curator pick a different frame.
         const base = slugify(species.commonName || species.sciName || "photo");
-        const clipKey = `${base}-anim-${index}-${Date.now().toString(36)}.${mediaKind === "gif" ? "gif" : ".mp4".slice(1)}`;
+        const clipKey = `${base}-anim-${uuid().slice(0, 6)}.${mediaKind === "gif" ? "gif" : "mp4"}`;
         await putFile(projectId, clipKey, file);
         let still: Blob;
         try {
@@ -452,11 +504,11 @@ function PhotosEditor({
           alert(`Couldn't decode ${file.name}: ${err instanceof Error ? err.message : err}`);
           continue;
         }
-        const posterKey = `${base}-frame-${index}-${Date.now().toString(36)}.jpg`;
+        const posterKey = `${base}-frame-${uuid().slice(0, 6)}.jpg`;
         await putFile(projectId, posterKey, still);
         const slot: PhotoSlot = {
           id: `upload:${uuid()}`,
-          role: index === 0 ? "main" : "secondary",
+          role,
           credit: { observer: "You", license: "all-rights-reserved" },
           fileKey: posterKey,
           alt: file.name,
@@ -475,13 +527,20 @@ function PhotosEditor({
     const file = files[0];
     const old = species.photos[slotIndex];
     if (!file || !old) return;
-    await putFile(projectId, old.fileKey, file);
+    // Land the upload on a fresh key — overwriting the old fileKey in place
+    // changed the saved deck's photo before the draft was ever saved.
+    const base = slugify(species.commonName || species.sciName || "photo");
+    const fileKey = `${base}-${old.role}-${uuid().slice(0, 6)}.jpg`;
+    await putFile(projectId, fileKey, file);
+    queueDeletion([old.fileKey, old.animation?.fileKey]);
     onChange((d) => {
       const slot = d.photos[slotIndex];
       if (slot) {
         slot.id = `upload:${uuid()}`;
         slot.credit = { observer: "You", license: "all-rights-reserved" };
         slot.alt = file.name;
+        slot.fileKey = fileKey;
+        slot.animation = undefined; // a still upload replaces any clip
         slot.crop = undefined;
         slot.focus = undefined;
       }
@@ -567,7 +626,7 @@ function PhotosEditor({
               <button
                 className="text-xs underline"
                 style={{ color: "var(--danger)" }}
-                onClick={() => void removePhoto(slot.fileKey)}
+                onClick={() => removePhoto(slot)}
               >
                 remove
               </button>
@@ -639,9 +698,10 @@ function PhotosEditor({
             const slot = species.photos[frameSlot];
             if (!slot?.animation) return;
             const base = slugify(species.commonName || species.sciName || "still");
-            const posterKey = `${base}-frame-${Date.now().toString(36)}.jpg`;
+            const posterKey = `${base}-frame-${uuid().slice(0, 6)}.jpg`;
             await putFile(projectId, posterKey, still);
-            await deleteFile(projectId, slot.fileKey);
+            // The old still stays in the store until the draft is saved.
+            queueDeletion([slot.fileKey]);
             onChange((d) => {
               const target = d.photos[frameSlot];
               if (target) target.fileKey = posterKey;

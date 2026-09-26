@@ -9,10 +9,15 @@ can later be committed to the app's `decks/` registry unchanged.
 <deck-id>.zip
 ├── manifest.json
 └── photos/
-    ├── <slug>-main.jpg
-    ├── <slug>-secondary-1.jpg
+    ├── <slug>-main-<unique>.jpg
+    ├── <slug>-secondary-<unique>.jpg
     └── ...
 ```
+
+Photo files are named after the species slug and their role, plus a short
+unique suffix (uploads may be replaced or several species can share a slug,
+so the file name can't be derived from position alone). Cards reference their
+photos by `file`, never by convention.
 
 ## manifest.json
 

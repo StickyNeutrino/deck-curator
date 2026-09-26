@@ -4,7 +4,6 @@ import type { PhotoCandidate } from "~/lib/resolve";
 import { candidatePhotos, pickDistinct } from "~/lib/resolve";
 import { acquireMediaSlot } from "~/lib/media";
 import type { InatSearchSettings, SpeciesEntry } from "~/lib/types";
-import { deleteFile } from "~/lib/store";
 import { slugify } from "~/lib/ids";
 import { photoCap } from "~/lib/cardGeometry";
 import { ReplacePicker } from "~/components/ReplacePicker";
@@ -22,12 +21,15 @@ export function InatPhotoBrowser({
   projectId,
   settings,
   onChange,
+  queueDeletion,
 }: {
   species: SpeciesEntry;
   projectId: string;
   /** Deck search constraints (from the project); defaults apply when absent. */
   settings?: InatSearchSettings;
   onChange: (f: (d: SpeciesEntry) => void) => void;
+  /** Files whose slots were replaced are deleted when the draft is saved. */
+  queueDeletion: (keys: Array<string | undefined | null>) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,11 +92,11 @@ export function InatPhotoBrowser({
         }
         if (replaceIndex !== undefined) {
           // Full card: swap in the new media at the picked slot, keeping its
-          // role and clearing any crop tuned to the old image.
+          // role and clearing any crop tuned to the old image. The old
+          // files are deleted only once the draft is saved.
           const old = species.photos[replaceIndex];
           if (!old) return;
-          await deleteFile(projectId, old.fileKey);
-          if (old.animation) await deleteFile(projectId, old.animation.fileKey);
+          queueDeletion([old.fileKey, old.animation?.fileKey]);
           onChange((d) => {
             const slot = d.photos[replaceIndex];
             if (slot) {
@@ -122,7 +124,7 @@ export function InatPhotoBrowser({
         setStatus(`Could not download media: ${err instanceof Error ? err.message : err}`);
       }
     },
-    [species, projectId, onChange, settings],
+    [species, projectId, onChange, settings, queueDeletion],
   );
 
   const autoPick = useCallback(async () => {

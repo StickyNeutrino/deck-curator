@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router";
 import { getProject, listProjects, renameProject, saveProject } from "~/lib/store";
 import type { Project } from "~/lib/types";
 import { exportDeck } from "~/lib/export";
-import { validateProject, type ExportIssue } from "~/lib/validate";
+import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
 import { listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { ProjectTabs } from "~/components/ProjectTabs";
 
@@ -25,6 +25,7 @@ export default function ExportPage() {
   const [exporting, setExporting] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [missing, setMissing] = useState<ExportIssue[]>([]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -33,7 +34,21 @@ export default function ExportPage() {
       .catch((err) => setSaveError(`Couldn't load the deck: ${err instanceof Error ? err.message : err}`));
   }, [projectId]);
 
-  const issues = useMemo(() => (project ? validateProject(project) : []), [project]);
+  const issues = useMemo(
+    () => [...(project ? validateProject(project) : []), ...missing],
+    [project, missing],
+  );
+
+  // Manifest entries referencing blobs that aren't in the store (removed
+  // before a save, legacy damage) would export as broken cards.
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    void missingPhotoIssues(project)
+      .then((found) => { if (!cancelled) setMissing(found); })
+      .catch(() => { if (!cancelled) setMissing([]); });
+    return () => { cancelled = true; };
+  }, [project]);
 
   // The deck id is the store key for the record, the photo files, and the git
   // repo — editing it per keystroke duplicated decks and broke every photo.

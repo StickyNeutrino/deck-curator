@@ -1,4 +1,5 @@
 import type { Project } from "./types";
+import { listFileKeys } from "./store";
 
 /**
  * Pre-export validation. Issues don't block export — the flashcards app
@@ -64,6 +65,30 @@ export function validateProject(project: Project): ExportIssue[] {
   }
   if (!project.species.length) {
     issues.push({ severity: "error", message: "The deck has no species yet." });
+  }
+  return issues;
+}
+
+/** Photos whose blobs are missing from the deck's storage — the manifest
+ *  would reference files the zip doesn't contain. Async because it needs the
+ *  store; the export page merges these into the sync report. */
+export async function missingPhotoIssues(project: Project): Promise<ExportIssue[]> {
+  const present = await listFileKeys(project.id);
+  const issues: ExportIssue[] = [];
+  for (const s of project.species) {
+    const label = s.commonName || s.sciName || "(unnamed species)";
+    for (const p of s.photos) {
+      for (const key of [p.fileKey, p.animation?.fileKey]) {
+        if (key && !present.has(key)) {
+          issues.push({
+            severity: "error",
+            message: `${label}: photo file “${key}” is missing from the deck's storage — remove the photo (and save) before exporting.`,
+            species: label,
+            speciesId: s.id,
+          });
+        }
+      }
+    }
   }
   return issues;
 }
