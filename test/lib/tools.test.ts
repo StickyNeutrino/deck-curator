@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { establishmentToNative, conservationLabel, isThreatened } from "~/lib/tools";
+import { establishmentToNative, conservationLabel, isThreatened, toolResultMerger } from "~/lib/tools";
+import { makeSpecies } from "~/lib/types";
+import { newProject } from "~/lib/importSpreadsheet";
+import type { Project, SpeciesEntry } from "~/lib/types";
 import type { InatEstablishment, InatConservationStatus } from "~/lib/inat";
 
 describe("establishmentToNative", () => {
@@ -60,5 +63,51 @@ describe("establishment place payload", () => {
     };
     expect(establishmentToNative(em)).toBe("non-native");
     expect(em.place?.display_name).toContain("San Diego");
+  });
+});
+
+describe("toolResultMerger", () => {
+  const makeProject = (species: SpeciesEntry[]): Project => {
+    const p = newProject("Merger Fixture");
+    p.species = species;
+    return p;
+  };
+
+  it("applies only the fields the tool changed, keeping concurrent edits", () => {
+    const snapshot = makeProject([makeSpecies({ id: "a", commonName: "Oak", native: "unknown" })]);
+    const draft = makeProject([makeSpecies({ id: "a", commonName: "Live Oak", native: "unknown" })]);
+    const result = makeProject([makeSpecies({ id: "a", commonName: "Oak", native: "native" })]);
+
+    toolResultMerger(snapshot, result)(draft);
+
+    // The tool's native label landed…
+    expect(draft.species[0].native).toBe("native");
+    // …but the curator's mid-run rename survived.
+    expect(draft.species[0].commonName).toBe("Live Oak");
+  });
+
+  it("keeps species added and removed during the run", () => {
+    const kept = makeSpecies({ id: "a", commonName: "Oak" });
+    const snapshot = makeProject([kept]);
+    const added = makeSpecies({ id: "new", commonName: "New Guy" });
+    const draft = makeProject([kept, added]); // added mid-run
+    const result = makeProject([makeSpecies({ id: "a", commonName: "Oak", native: "native" })]);
+    toolResultMerger(snapshot, result)(draft);
+
+    expect(draft.species.map((s) => s.id)).toEqual(["a", "new"]);
+    expect(draft.species[0].native).toBe("native");
+  });
+
+  it("replaces categories only when the tool changed them", () => {
+    const entry = makeSpecies({ id: "a", commonName: "Oak", category: "plants" });
+    const snapshot = makeProject([entry]);
+    const draft = makeProject([entry]);
+    toolResultMerger(snapshot, makeProject([entry]))(draft);
+    expect(draft.categories).toEqual(snapshot.categories);
+
+    const resorted = makeProject([entry]);
+    resorted.categories = [{ id: "trees", label: "Trees" }];
+    toolResultMerger(snapshot, resorted)(draft);
+    expect(draft.categories).toEqual([{ id: "trees", label: "Trees" }]);
   });
 });

@@ -39,6 +39,37 @@ export interface LabelRarityOptions {
 /** Species the tool is applied to: a selection, or everything when unset. */
 export type Scope = { ids?: string[] };
 
+/**
+ * Merge a tool's finished result into the *live* draft without clobbering
+ * edits made while the tool was running (these runs are long — rate-limited
+ * at ~1 request/second — and the UI stays interactive).
+ *
+ * Per species, only fields the tool actually changed versus the snapshot it
+ * started from are written back. Species added mid-run are untouched, and
+ * species removed mid-run stay removed (the result is applied onto the
+ * current list, never replaces it). Categories are replaced only when the
+ * tool actually changed them (re-sort, rename).
+ */
+export function toolResultMerger(snapshot: Project, result: Project): (draft: Project) => void {
+  return (draft: Project): void => {
+    const snapshotById = new Map(snapshot.species.map((s) => [s.id, s]));
+    const resultById = new Map(result.species.map((s) => [s.id, s]));
+    for (const current of draft.species) {
+      const updated = resultById.get(current.id);
+      const before = snapshotById.get(current.id);
+      if (!updated || !before) continue;
+      for (const key of Object.keys(updated) as Array<keyof SpeciesEntry>) {
+        if (key === "id") continue;
+        if (JSON.stringify(before[key]) === JSON.stringify(updated[key])) continue;
+        (current as unknown as Record<string, unknown>)[key] = structuredClone(updated[key]);
+      }
+    }
+    if (JSON.stringify(snapshot.categories) !== JSON.stringify(result.categories)) {
+      draft.categories = structuredClone(result.categories);
+    }
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Pure mapping helpers (unit-tested)                                  */
 /* ------------------------------------------------------------------ */

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Project } from "~/lib/types";
 import { enrichProject } from "~/lib/enrich";
-import { labelNativeStatus, labelRarity, type ToolReport } from "~/lib/tools";
+import { labelNativeStatus, labelRarity, toolResultMerger, type ToolReport } from "~/lib/tools";
 
 /**
  * Deck tools dropdown: batch actions over the deck (or the current selection)
@@ -80,11 +80,10 @@ export function ToolsMenu({
   const scope = scopeIds.length ? scopeIds : project.species.map((s) => s.id);
   const scopeLabel = scopeIds.length ? `${scopeIds.length} selected` : `all ${project.species.length} species`;
 
-  const applyResult = (result: Project) => {
-    onChange((d) => {
-      d.categories = result.categories;
-      d.species = result.species;
-    });
+  /** Merge, don't clobber: only fields the tool changed vs the snapshot are
+   *  applied, so edits made during the run survive. */
+  const applyResult = (snapshot: Project, result: Project) => {
+    onChange(toolResultMerger(snapshot, result));
   };
 
   const runEnrich = async () => {
@@ -92,7 +91,7 @@ export function ToolsMenu({
     setStatus(null);
     try {
       const result = await enrichProject(project, (done, total) => setBusy({ label: "Enriching", done, total }), scope);
-      applyResult(result.project);
+      applyResult(project, result.project);
       const parts = [`enriched ${result.resolved} species`];
       if (result.sorted) parts.push(`sorted ${result.sorted} into categories`);
       if (result.unresolved.length) parts.push(`couldn't resolve: ${result.unresolved.slice(0, 3).join(", ")}`);
@@ -146,7 +145,7 @@ export function ToolsMenu({
         (done, total) => setBusy({ label: "Labeling", done, total }),
         onChange,
       );
-      applyResult(next);
+      applyResult(project, next);
       setStatus(renderReport(report));
     } catch (err) {
       setStatus(`Labeling failed: ${err instanceof Error ? err.message : err}`);
@@ -167,7 +166,7 @@ export function ToolsMenu({
         (done, total) => setBusy({ label: "Labeling", done, total }),
         onChange,
       );
-      applyResult(next);
+      applyResult(project, next);
       setStatus(renderReport(report));
     } catch (err) {
       setStatus(`Labeling failed: ${err instanceof Error ? err.message : err}`);

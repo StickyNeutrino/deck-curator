@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Project } from "~/lib/types";
 import { resortByTaxonomy } from "~/lib/categories";
+import { toolResultMerger } from "~/lib/tools";
 
 /**
  * Category management: rename, add, and remove categories; removal reassigns
@@ -71,9 +72,10 @@ export function CategoriesManager({
               try {
                 const sorted = await resortByTaxonomy({ ...project, granularity });
                 onChange((d) => {
+                  // Merge like the deck tools: edits made while the (slow)
+                  // re-sort ran must survive.
+                  toolResultMerger(project, { ...project, ...sorted })(d);
                   d.granularity = granularity;
-                  d.categories = sorted.categories;
-                  d.species = sorted.species;
                 });
               } catch (err) {
                 // Without this the rejection was unhandled and the select
