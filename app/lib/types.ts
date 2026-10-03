@@ -36,8 +36,9 @@ export type LicenseCode = (typeof UPLOAD_LICENSES)[number];
  *  filter is. Saved on the Project so a deck remembers its rules. */
 export interface InatSearchSettings {
   /** Acceptable iNat license codes (subset of INAT_ALLOWED_LICENSES).
-   *  Default: the commercially usable subset (no NC variants) — NC photos
-   *  would stop the deck being sold; individual decks can opt back in. */
+   *  Default: all of them — ND variants and unlicensed photos are never
+   *  accepted; curators narrow to exclude NC variants (per deck) when the
+   *  finished deck must be commercially sellable. */
   licenses: LicenseCode[];
   /** Only research-grade observations (community-confirmed ID). Default on. */
   researchGrade: boolean;
@@ -48,16 +49,15 @@ export interface InatSearchSettings {
 }
 
 export const DEFAULT_SEARCH_SETTINGS: InatSearchSettings = {
-  // Commercially distributable photos only: iNat skews NC-heavy (it's the
-  // signup default), so starting from the full list quietly made decks
-  // unsellable. Curators can re-check the NC boxes per deck.
-  licenses: ["cc0", "cc-by", "cc-by-sa"],
+  // Every valid iNat option by default; the NC checkboxes can be unchecked
+  // per deck when the finished deck must be sellable.
+  licenses: [...INAT_ALLOWED_LICENSES],
   // Community-confirmed identifications by default.
   researchGrade: true,
   includeMedia: false,
   // iNat's vote order surfaces the community's best photos first; the
-  // permissive-first tiering is now an opt-in (order matters less since NC
-  // licenses are excluded by default).
+  // permissive-first tiering is an opt-in (order matters less since ND
+  // variants and unlicensed photos are always rejected anyway).
   orderBy: "votes",
 };
 
