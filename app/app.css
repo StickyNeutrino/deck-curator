@@ -126,45 +126,78 @@ button {
   text-overflow: ellipsis;
 }
 
-/* Back-of-card text stack (same proportions as the rendered Healthy Canyons backs) */
+/* Back-of-card text stack — mirrors the flashcards app's .data-back-stack:
+   vertically centered column, same per-line sizes and margins (the px values
+   are on the 750px design canvas). */
 .preview-back {
   position: absolute;
   inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
   text-align: center;
+  padding: 0 6.6667%; /* 50px side margins on the 750px canvas */
   /* 12px on the 750px design canvas — the base all back text sizes in em
      from, matching the flashcards app's data-card-content. */
   font-size: 1.6cqw;
+  line-height: 1.2;
+  color: #1a1a1a;
 }
 
 .preview-back .title {
-  position: absolute;
-  top: 26.8%; /* 326px baseline ≈ 31% — title box sits above it */
-  left: 5%;
-  right: 5%;
+  width: 100%;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.05;
+  margin: 0 0 0.2em;
   font-size: 6em; /* 72px design — auto-shrunk by CardBack */
   white-space: nowrap;
   overflow: hidden;
 }
 
 .preview-back .alt-names {
-  color: var(--muted);
-  font-style: italic;
+  font-size: 2.1667em; /* 26px */
+  color: #555;
+  margin: 0 0 0.5em;
 }
 
 .preview-back .sci-name {
+  font-size: 2.8333em; /* 34px */
   font-style: italic;
+  margin: 0 0 3em;
+}
+
+.preview-back .family {
+  font-size: 2.6667em; /* 32px */
+  margin: 0 0 1em;
+}
+
+.preview-back .family-latin {
+  font-size: 2.5em; /* 30px */
+  font-style: italic;
+  margin: 0 0 4em;
+}
+
+.preview-back .native {
+  font-size: 3em; /* 36px */
+  margin: 0 0 1.2em;
+}
+
+.preview-back .rarity {
+  font-size: 2.3333em; /* 28px */
+  color: #444;
+  margin: 0;
 }
 
 .preview-back .logo-chip {
   position: absolute;
-  top: 5.85%;
-  left: 8.2%;
-  width: 10.1%;
+  left: 8%;
+  top: 5.3333%;
+  width: 11.2cqw;
   aspect-ratio: 1;
   background: #fff;
-  border: 7px solid #000;
+  border: 0.8cqw solid #1a1a1a;
+  border-radius: 0.8cqw;
 }
 
 @media (prefers-reduced-motion: reduce) {

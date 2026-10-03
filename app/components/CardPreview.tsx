@@ -91,11 +91,12 @@ const TITLE_MAX_EM = 6;
 const TITLE_MIN_EM = 2.5;
 const TITLE_STEP_EM = 0.25;
 
-/** Card back: the text stack, mirroring the Healthy Canyons rendered backs. */
+/** Card back: the text stack, mirroring the flashcards app's data-back-stack
+ *  (same line classes, sizes, and spacing — see app.css .preview-back). */
 export function CardBack({ species }: { species: SpeciesEntry }) {
   const titleRef = useRef<HTMLDivElement | null>(null);
   const title = species.commonName || species.sciName;
-  const altLine = species.altNames.length ? `aka ${species.altNames.join(" · ")}` : null;
+  const altLine = species.altNames.length ? `aka ${species.altNames.join(", ")}` : null;
   const invasive = isInvasive(species);
   const border = borderStyleDef(species.border);
 
@@ -118,48 +119,19 @@ export function CardBack({ species }: { species: SpeciesEntry }) {
       data-border={species.border}
       style={border.id !== "none" ? { border: `6px solid ${border.color}` } : undefined}
     >
-      <div className="logo-chip" />
       <div className="preview-back">
+        <div className="logo-chip" />
         <div className="title" ref={titleRef} data-testid="card-back-title">{title}</div>
-        {altLine && (
-          <div
-            className="alt-names"
-            style={{ position: "absolute", top: "32%", left: "5%", right: "5%" }}
-          >
-            {altLine}
-          </div>
-        )}
-        {species.sciName && (
-          <div
-            className="sci-name"
-            style={{ position: "absolute", top: altLine ? "38%" : "34%", left: "5%", right: "5%" }}
-          >
-            {species.sciName}
-          </div>
-        )}
-        {species.familyCommon && (
-          <div style={{ position: "absolute", top: "47%", left: "5%", right: "5%" }}>
-            {species.familyCommon}
-          </div>
-        )}
-        {species.familyLatin && (
-          <div
-            className="sci-name"
-            style={{ position: "absolute", top: "53%", left: "5%", right: "5%" }}
-          >
-            {species.familyLatin}
-          </div>
-        )}
+        {altLine && <div className="alt-names">{altLine}</div>}
+        {species.sciName && <div className="sci-name">{species.sciName}</div>}
+        {species.familyCommon && <div className="family">{species.familyCommon}</div>}
+        {species.familyLatin && <div className="family-latin">{species.familyLatin}</div>}
         {(species.native !== "unknown" || invasive) && (
-          <div style={{ position: "absolute", top: "64%", left: "5%", right: "5%", fontWeight: 600 }}>
+          <div className="native">
             {invasive ? "Non-native (Invasive)" : species.native === "native" ? "Native" : "Non-native"}
           </div>
         )}
-        {species.rarity && (
-          <div style={{ position: "absolute", top: "70%", left: "5%", right: "5%", fontSize: "0.85em" }}>
-            {species.rarity}
-          </div>
-        )}
+        {species.rarity && <div className="rarity">{species.rarity}</div>}
       </div>
     </div>
   );
