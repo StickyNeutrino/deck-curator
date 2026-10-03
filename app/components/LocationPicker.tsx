@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeckLocation } from "~/lib/types";
 import "leaflet/dist/leaflet.css";
-// Leaflet resolves its default marker icon at runtime by reading a CSS rule
-// from the page, which breaks under bundled production builds — the marker
-// renders as a broken-image box labeled "marker". Import the assets through
-// the bundler instead (Vite inlines them as data URIs, so the icons work
-// regardless of host or base path).
+// Leaflet's default marker icon resolves its PNGs at runtime by probing the
+// page CSS for a marker-icon.png rule — a probe the bundler's hashed asset
+// names defeat, and whose (garbage) result Leaflet even prepends to
+// explicitly configured URLs. Build markers from bundler-imported assets
+// instead: Vite inlines the small PNGs as data URIs, so the icons work
+// regardless of host or base path.
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
@@ -120,12 +121,17 @@ export function LocationPicker({
     void (async () => {
       const L = await import("leaflet");
       if (cancelled || !containerRef.current || mapRef.current) return;
-      // Pin the bundled icon assets before any marker exists (see the import
-      // comment: Leaflet's runtime path detection fails in production builds).
-      L.Icon.Default.mergeOptions({
-        iconRetinaUrl: markerIcon2x,
+      // Explicit icon from the bundled assets, with Icon.Default's geometry
+      // (25×41 marker, 41×41 shadow). Icon.Default's own path detection must
+      // not be involved — it corrupts URLs in the bundled build.
+      const icon = L.icon({
         iconUrl: markerIcon,
+        iconRetinaUrl: markerIcon2x,
         shadowUrl: markerShadow,
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowSize: [41, 41],
       });
       const map = L.map(containerRef.current, { scrollWheelZoom: false }).setView(
         [loc?.lat ?? 32.7157, loc?.lng ?? -117.1611],
@@ -135,7 +141,7 @@ export function LocationPicker({
         attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         maxZoom: 19,
       }).addTo(map);
-      const marker = L.marker([loc?.lat ?? 32.7157, loc?.lng ?? -117.1611], { draggable: true });
+      const marker = L.marker([loc?.lat ?? 32.7157, loc?.lng ?? -117.1611], { draggable: true, icon });
       if (loc?.lat != null) marker.addTo(map);
       marker.on("dragend", () => {
         const pos = marker.getLatLng();

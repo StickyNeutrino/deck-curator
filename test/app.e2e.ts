@@ -121,6 +121,31 @@ test("location picker sets the deck location and the iNat scope", async ({ page 
   expect((await download).suggestedFilename()).toMatch(/geo-deck.*\.zip$/);
 });
 
+test("map marker icon actually loads (no broken default-icon path)", async ({ page }) => {
+  // Regression: in production builds Leaflet's runtime-detected default icon
+  // path produced 404s — the marker rendered as a broken-image box. Dev
+  // servers accidentally served the icons, so only the built SPA shows it;
+  // run with E2E_PROD=1 against `npm run build` output.
+  await page.goto("/");
+  await page.getByRole("button", { name: "New deck" }).click();
+  await page.getByTestId("new-deck-name").fill("Marker Deck");
+  await page.getByTestId("create-deck").click();
+  await page.waitForURL(/\/project\//);
+  await page.getByTestId("tab-info").click();
+  await page.waitForURL(/\/info/);
+
+  // New decks start locationless; the marker is added on first map click.
+  await page.getByTestId("location-map").click();
+  const icon = page.locator("img.leaflet-marker-icon");
+  await expect(icon).toBeVisible();
+
+  // naturalWidth > 0 proves the icon bytes actually loaded — a 404'd image
+  // renders at natural size 0 (the broken-image box).
+  await expect
+    .poll(async () => icon.evaluate((el: HTMLImageElement) => el.naturalWidth))
+    .toBeGreaterThan(0);
+});
+
 test("version history: auto-commits once per change and lists versions", async ({ page }) => {
   test.setTimeout(90_000);
   await page.goto("/");
