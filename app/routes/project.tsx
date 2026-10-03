@@ -210,15 +210,32 @@ function SpeciesTable({
           ))}
         </select>
         {selectedCount > 0 && (
-          <button
-            className="text-xs underline"
-            style={{ color: "var(--muted)" }}
-            onClick={() => onSelectAll(new Set())}
-            data-testid="clear-selection"
-            title="Clear the selection — tools then apply to the whole deck"
-          >
-            {selectedCount} selected · clear
-          </button>
+          <>
+            <button
+              className="text-xs underline"
+              style={{ color: "var(--muted)" }}
+              onClick={() => onSelectAll(new Set())}
+              data-testid="clear-selection"
+              title="Clear the selection — tools then apply to the whole deck"
+            >
+              {selectedCount} selected · clear
+            </button>
+            <button
+              className="text-xs underline"
+              style={{ color: "var(--danger)" }}
+              onClick={() => {
+                if (!confirm(`Remove ${selectedCount} selected species?`)) return;
+                onChange((d) => {
+                  d.species = d.species.filter((s) => !selected.has(s.id));
+                });
+                onSelectAll(new Set());
+              }}
+              data-testid="remove-selected"
+              title="Remove all selected species from the deck"
+            >
+              remove selected
+            </button>
+          </>
         )}
         <span className="text-xs ml-auto" style={{ color: "var(--muted)" }}>
           {visible.length}/{project.species.length} species

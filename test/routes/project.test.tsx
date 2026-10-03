@@ -127,6 +127,55 @@ describe("project route", () => {
     expect(screen.queryByTestId("clear-selection")).not.toBeInTheDocument();
   });
 
+  it("removes all selected species after confirm", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const project = newProject("Bulk Removal");
+    project.species.push(
+      makeSpecies({ commonName: "Oak", category: "plants" }),
+      makeSpecies({ commonName: "Squirrel", category: "animals" }),
+      makeSpecies({ commonName: "Fern", category: "plants" }),
+    );
+    await saveProject(project);
+    renderProject(project.id);
+
+    const rows = await screen.findAllByTestId("species-row");
+    await user.click(rows[0].querySelector('input[type="checkbox"]')!);
+    await user.click(rows[2].querySelector('input[type="checkbox"]')!);
+
+    // The bulk remove only appears while a selection exists.
+    await user.click(screen.getByTestId("remove-selected"));
+    await waitFor(async () => {
+      const loaded = (await getProject(project.id))!;
+      expect(loaded.species.map((s) => s.commonName)).toEqual(["Squirrel"]);
+    });
+    // The selection is cleared with the rows it pointed at.
+    expect(screen.queryByTestId("remove-selected")).not.toBeInTheDocument();
+  });
+
+  it("keeps everything when the bulk remove is cancelled", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const project = newProject("Bulk Removal Cancel");
+    project.species.push(
+      makeSpecies({ commonName: "Oak", category: "plants" }),
+      makeSpecies({ commonName: "Fern", category: "plants" }),
+    );
+    await saveProject(project);
+    renderProject(project.id);
+
+    const rows = await screen.findAllByTestId("species-row");
+    await user.click(rows[0].querySelector('input[type="checkbox"]')!);
+    await user.click(screen.getByTestId("remove-selected"));
+
+    await waitFor(async () => {
+      const loaded = (await getProject(project.id))!;
+      expect(loaded.species).toHaveLength(2);
+    });
+    // Still selected — nothing was removed, so the toolbar keeps its state.
+    expect(screen.getByTestId("clear-selection")).toHaveTextContent("1 selected");
+  });
+
   it("opens the tools menu and reports a missing deck location for place-based tools", async () => {
     const user = userEvent.setup();
     const project = newProject("Tools");
