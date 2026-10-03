@@ -235,9 +235,22 @@ async function photosUnchangedSinceHead(project: Project): Promise<boolean> {
   }
 }
 
+/** Leading text of every automatically generated commit message (see
+ *  defaultCommitMessage) — the version history uses it to offer hiding
+ *  these routine checkpoints from the list. Keep the two beside each
+ *  other: a change to the generated message updates both. */
+const AUTOSAVE_MESSAGE_PREFIX = "Autosave — ";
+
+/** True when a commit was made automatically (vs. a named version or the
+ *  deck's initial commit). Named notes the curator types are never
+ *  filtered, so the prefix only ever matches generated messages. */
+export function isAutosaveCommit(message: string): boolean {
+  return message.startsWith(AUTOSAVE_MESSAGE_PREFIX);
+}
+
 export function defaultCommitMessage(project: Project): string {
   const photos = project.species.reduce((n, s) => n + s.photos.length, 0);
-  return `Autosave — ${project.species.length} species, ${photos} photos`;
+  return `${AUTOSAVE_MESSAGE_PREFIX}${project.species.length} species, ${photos} photos`;
 }
 
 async function commitAll(

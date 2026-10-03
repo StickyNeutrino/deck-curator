@@ -5,7 +5,7 @@ import { getProject, listProjects, renameProject, saveProject } from "~/lib/stor
 import type { Project } from "~/lib/types";
 import { exportDeck } from "~/lib/export";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
-import { ensureRepo, listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { ensureRepo, isAutosaveCommit, listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
@@ -260,6 +260,16 @@ function VersionHistory({
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [hideAutosaves, setHideAutosaves] = useState(false);
+
+  // The filter is display-only: autosave commits stay in the repository and
+  // remain restorable — they just leave the visible list when hidden.
+  const visible = useMemo(() => {
+    if (versions === null) return null;
+    return hideAutosaves ? versions.filter((v) => !isAutosaveCommit(v.message)) : versions;
+  }, [versions, hideAutosaves]);
+  const total = versions?.length ?? 0;
+  const hidden = hideAutosaves ? total - (visible?.length ?? 0) : 0;
 
   const refresh = useCallback(async () => {
     const list = await listVersions(project.id);
@@ -357,23 +367,41 @@ function VersionHistory({
         <button className="btn-secondary" onClick={() => void refresh()} disabled={busy !== null}>
           Refresh
         </button>
+        <label className="inline-flex items-center gap-1.5 text-sm cursor-pointer whitespace-nowrap">
+          <input
+            type="checkbox"
+            checked={hideAutosaves}
+            onChange={(e) => setHideAutosaves(e.target.checked)}
+            data-testid="hide-autosaves"
+          />
+          Hide autosaves
+        </label>
       </div>
       {status && (
         <p className="text-sm mb-2" data-testid="version-status" style={{ color: "var(--muted)" }}>
           {status}
         </p>
       )}
-      {versions === null ? (
+      {visible !== null && hidden > 0 && (
+        <p className="text-xs mb-2" data-testid="autosaves-hidden" style={{ color: "var(--muted)" }}>
+          Hiding {hidden} autosave {hidden === 1 ? "version" : "versions"}.
+        </p>
+      )}
+      {visible === null ? (
         <p className="text-sm" style={{ color: "var(--muted)" }}>
           Loading history…
         </p>
-      ) : versions.length === 0 ? (
+      ) : total === 0 ? (
         <p className="text-sm" style={{ color: "var(--muted)" }}>
           No versions yet — the first commit lands shortly after you make a change.
         </p>
+      ) : visible.length === 0 ? (
+        <p className="text-sm" style={{ color: "var(--muted)" }}>
+          Every version so far is an autosave — untick “Hide autosaves” to see them.
+        </p>
       ) : (
         <ul className="rounded-lg border bg-white divide-y" style={{ borderColor: "var(--border)" }}>
-          {versions.map((v) => (
+          {visible.map((v) => (
             <li key={v.oid} className="flex items-center gap-3 px-4 py-2 text-sm">
               <code className="text-xs" style={{ color: "var(--muted)" }}>
                 {v.oid.slice(0, 8)}
