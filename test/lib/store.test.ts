@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject } from "~/lib/store";
+import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot } from "~/lib/store";
+import { blobToArrayBuffer } from "~/lib/blobUtils";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 
@@ -109,5 +110,72 @@ describe("project store", () => {
     expect(await getProject(a.id)).toBeDefined();
     expect(await getProject(b.id)).toBeDefined();
     expect(await getFile(a.id, "x.jpg")).toBeDefined();
+  });
+
+  it("keeps a warm in-memory cache across reads", async () => {
+    const project = newProject("Warm");
+    await saveProject(project);
+    await putFile(project.id, "a.jpg", new Blob(["a"]));
+    const first = await cachedGetFile(project.id, "a.jpg");
+    expect(first).toBeInstanceOf(Blob);
+    expect(peekCachedFile(project.id, "a.jpg")).toBe(first);
+    // The repeat read returns the SAME blob object — served from memory,
+    // not a fresh IndexedDB round-trip (which always yields a new Blob).
+    expect(await cachedGetFile(project.id, "a.jpg")).toBe(first);
+    // A cold store read also lands in the cache.
+    expect(await cachedGetFile(project.id, "missing.jpg")).toBeUndefined();
+  });
+
+  it("refreshes the cache when a file is overwritten or removed", async () => {
+    const project = newProject("Fresh");
+    await saveProject(project);
+    await putFile(project.id, "a.jpg", new Blob(["old-bytes"]));
+    expect((await cachedGetFile(project.id, "a.jpg"))!.size).toBe(9);
+    // Overwriting the key must never serve the stale bytes.
+    await putFile(project.id, "a.jpg", new Blob(["brand-new-bytes"]));
+    expect((await cachedGetFile(project.id, "a.jpg"))!.size).toBe(15);
+    await deleteFile(project.id, "a.jpg");
+    expect(peekCachedFile(project.id, "a.jpg")).toBeUndefined();
+    expect(await cachedGetFile(project.id, "a.jpg")).toBeUndefined();
+  });
+
+  it("drops cached blobs when a version restore rewrites the deck's files", async () => {
+    const project = newProject("Restore");
+    await saveProject(project);
+    await putFile(project.id, "a.jpg", new Blob(["a"]));
+    await cachedGetFile(project.id, "a.jpg");
+    const rewritten = await blobToArrayBuffer(new Blob(["rewritten"]));
+
+    await restoreSnapshot(project.id, new Map([["a.jpg", rewritten]]), new Set(["a.jpg"]), project);
+
+    expect(peekCachedFile(project.id, "a.jpg")).toBeUndefined();
+    expect((await cachedGetFile(project.id, "a.jpg"))!.size).toBe(9);
+  });
+
+  it("evicts the oldest cached blobs once the limit is hit", async () => {
+    const project = newProject("Big");
+    await saveProject(project);
+    for (let i = 0; i < 300; i++) {
+      await putFile(project.id, `photo-${i}.jpg`, new Blob([String(i)]));
+    }
+    // The cache keeps the most recent writes and drops the oldest; the
+    // store itself still holds everything.
+    expect(peekCachedFile(project.id, "photo-299.jpg")).toBeInstanceOf(Blob);
+    expect(peekCachedFile(project.id, "photo-0.jpg")).toBeUndefined();
+    expect((await listFiles(project.id)).size).toBe(300);
+  });
+
+  it("moves cached blobs with a project rename and drops them on delete", async () => {
+    const project = newProject("Mover");
+    await saveProject(project);
+    await putFile(project.id, "a.jpg", new Blob(["a"]));
+    await cachedGetFile(project.id, "a.jpg");
+
+    await renameProject(project.id, { ...structuredClone(project), id: "moved-deck" });
+    expect(peekCachedFile(project.id, "a.jpg")).toBeUndefined();
+    expect(peekCachedFile("moved-deck", "a.jpg")).toBeInstanceOf(Blob);
+
+    await deleteProject("moved-deck");
+    expect(peekCachedFile("moved-deck", "a.jpg")).toBeUndefined();
   });
 });

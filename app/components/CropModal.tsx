@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { clampCrop, defaultCoverCrop } from "~/lib/cardGeometry";
-import { getFile } from "~/lib/store";
+import { cachedGetFile } from "~/lib/store";
 
 /**
  * Crop editor: pick the exact bounds of the photo that fill the card slot —
@@ -50,7 +50,7 @@ export function CropModal({
   useEffect(() => {
     let objectUrl: string | null = null;
     let cancelled = false;
-    void getFile(projectId, fileKey).then((blob) => {
+    void cachedGetFile(projectId, fileKey).then((blob) => {
       if (cancelled || !blob) return;
       objectUrl = URL.createObjectURL(blob);
       const img = new Image();

@@ -10,6 +10,32 @@ import { creditText, slotsFor, rectStyle, focusStyle, cropStyle, CARD_W, CARD_H 
 
 export type BlobResolver = (fileKey: string) => Promise<Blob | undefined>;
 
+/** Once a slot is within half a viewport of being scrolled into view, start
+ *  loading its photo. The review grid can run hundreds of cards deep —
+ *  without this gate, every photo on the page loads at once and even the
+ *  first cards sit behind the queue. Falls back to loading immediately
+ *  where IntersectionObserver is unavailable (tests, old browsers). */
+function useNearViewport(ref: React.RefObject<HTMLDivElement | null>): boolean {
+  const [near, setNear] = useState(typeof IntersectionObserver !== "function");
+  useEffect(() => {
+    if (near) return;
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNear(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "400px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [near, ref]);
+  return near;
+}
+
 function PhotoImage({
   fileKey,
   resolve,
@@ -24,7 +50,10 @@ function PhotoImage({
   crop?: { x: number; y: number; w: number; h: number };
 }) {
   const [src, setSrc] = useState<string | null>(null);
+  const slotRef = useRef<HTMLDivElement | null>(null);
+  const near = useNearViewport(slotRef);
   useEffect(() => {
+    if (!near) return;
     let cancelled = false;
     let url: string | null = null;
     resolve(fileKey)
@@ -38,8 +67,12 @@ function PhotoImage({
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [fileKey, resolve]);
-  if (!src) return null;
+  }, [fileKey, resolve, near]);
+  if (!src) {
+    // Placeholder keeps the slot's fixed geometry (the .slot div is sized by
+    // the layout) while the blob loads or waits for the viewport.
+    return <div ref={slotRef} style={{ width: "100%", height: "100%" }} aria-hidden="true" />;
+  }
   // Explicit crop wins; legacy focus keeps working; otherwise centered cover.
   const style = crop ? cropStyle(crop) : focus ? focusStyle(focus) : undefined;
   return <img src={src} alt={alt ?? ""} loading="lazy" style={style} />;

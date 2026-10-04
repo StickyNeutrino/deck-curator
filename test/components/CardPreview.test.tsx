@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { CardFront, CardBack } from "~/components/CardPreview";
 import { makeSpecies } from "~/lib/types";
@@ -69,5 +69,83 @@ describe("CardBack", () => {
     const species = makeSpecies({ commonName: "Mystery", native: "unknown", border: "none" });
     render(<CardBack species={species} />);
     expect(screen.getByTestId("card-back").textContent).not.toContain("Native");
+  });
+});
+
+describe("PhotoImage viewport gating", () => {
+  // jsdom has no IntersectionObserver (so other tests here load at once —
+  // the immediate fallback); these tests install a controllable stub.
+  class IntersectionObserverStub {
+    static instances: IntersectionObserverStub[] = [];
+    callback: IntersectionObserverCallback;
+    observed: Element[] = [];
+    disconnected = false;
+    constructor(callback: IntersectionObserverCallback) {
+      this.callback = callback;
+      IntersectionObserverStub.instances.push(this);
+    }
+    observe = (el: Element): void => {
+      this.observed.push(el);
+    };
+    disconnect = (): void => {
+      this.disconnected = true;
+    };
+    unobserve = (): void => undefined;
+  }
+  let globalScope = globalThis as unknown as { IntersectionObserver?: unknown };
+
+  beforeEach(() => {
+    IntersectionObserverStub.instances = [];
+    globalScope.IntersectionObserver = IntersectionObserverStub as unknown as never;
+  });
+
+  afterEach(() => {
+    delete globalScope.IntersectionObserver;
+  });
+
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("falls back to loading at once where IntersectionObserver is unavailable", async () => {
+    delete globalScope.IntersectionObserver;
+    const resolve = vi.fn(async (key: string) => new Blob([key]));
+    render(<CardFront species={makeSpecies({ photos: [mainSlot] })} resolve={resolve} />);
+    await screen.findByTestId("card-front");
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith("main.jpg"));
+    await waitFor(() => expect(document.querySelector(".slot img")).toBeTruthy());
+  });
+
+  it("waits for the slot to approach the viewport before resolving", async () => {
+    const resolve = vi.fn(async (key: string) => new Blob([key]));
+    render(<CardFront species={makeSpecies({ photos: [mainSlot] })} resolve={resolve} />);
+    await screen.findByTestId("card-front");
+
+    // Not yet: the slot is below the fold and no intersection fired.
+    await tick();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(document.querySelector(".slot img")).toBeNull();
+    // The placeholder (not the img) is what the observer watches.
+    const observer = IntersectionObserverStub.instances[0];
+    expect(observer.observed).toHaveLength(1);
+
+    // Scroll it in: the resolver runs and the image appears.
+    observer.callback(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      observer as unknown as IntersectionObserver,
+    );
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith("main.jpg"));
+    await waitFor(() => expect(document.querySelector(".slot img")).toBeTruthy());
+    expect(observer.disconnected).toBe(true);
+  });
+
+  it("keeps waiting when the intersection report says not visible", async () => {
+    const resolve = vi.fn(async (key: string) => new Blob([key]));
+    render(<CardFront species={makeSpecies({ photos: [mainSlot] })} resolve={resolve} />);
+    await screen.findByTestId("card-front");
+    IntersectionObserverStub.instances[0].callback(
+      [{ isIntersecting: false } as IntersectionObserverEntry],
+      IntersectionObserverStub.instances[0] as unknown as IntersectionObserver,
+    );
+    await tick();
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

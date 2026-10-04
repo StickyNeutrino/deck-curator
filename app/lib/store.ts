@@ -104,6 +104,20 @@ export async function renameProject(oldId: string, next: Project): Promise<void>
   projects.delete(oldId);
   projects.put(structuredClone(next));
   await tx.done;
+  // Keep any cached blobs warm under the new prefix.
+  if (blobCache.size > 0) {
+    const moved = new Map<string, Blob>();
+    for (const [cachedKey, blob] of blobCache) {
+      moved.set(
+        cachedKey.startsWith(`${oldId}/`)
+          ? `${next.id}/${cachedKey.slice(oldId.length + 1)}`
+          : cachedKey,
+        blob,
+      );
+    }
+    blobCache.clear();
+    for (const [cachedKey, blob] of moved) blobCache.set(cachedKey, blob);
+  }
 }
 
 /** Atomically replace a project's files and record — used by version
@@ -131,6 +145,9 @@ export async function restoreSnapshot(
   }
   tx.objectStore("projects").put(structuredClone(project));
   await tx.done;
+  // The restore may have swapped bytes under existing keys — stale cache
+  // entries would render the pre-restore photos.
+  dropCachedBlobs(`${projectId}/`);
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -140,6 +157,7 @@ export async function deleteProject(id: string): Promise<void> {
     database.delete("projects", id),
     ...keys.filter((k) => k.startsWith(`${id}/`)).map((k) => database.delete("files", k)),
   ]);
+  dropCachedBlobs(`${id}/`);
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -166,6 +184,9 @@ export async function putFile(projectId: string, key: string, blob: Blob): Promi
   const database = await db();
   const buffer = await blobToArrayBuffer(blob);
   await database.put("files", { buffer, type: blob.type || "image/jpeg" }, fileKey(projectId, key));
+  // A fresh write is by definition not stale: refresh the warm cache so the
+  // next preview (e.g. back on the review page) shows the new bytes at once.
+  rememberBlob(fileKey(projectId, key), blob);
 }
 
 interface StoredFile {
@@ -203,28 +224,96 @@ export async function getFile(projectId: string, key: string): Promise<Blob | un
 export async function deleteFile(projectId: string, key: string): Promise<void> {
   const database = await db();
   await database.delete("files", fileKey(projectId, key));
+  blobCache.delete(fileKey(projectId, key));
+}
+
+// ---------- warm session blob cache ----------
+// Photo blobs are the slow part of a big deck: every page that shows cards
+// re-reads the same bytes from IndexedDB. Keeping recently used blobs in
+// memory (bounded, LRU-style) makes the review page open as if the cards
+// were just created — and every write path above refreshes or drops entries,
+// so a re-import, overwrite, or version restore can never serve stale bytes.
+
+const BLOB_CACHE_LIMIT = 250;
+const blobCache = new Map<string, Blob>(); // key: `${projectId}/${fileKey}`
+
+function rememberBlob(cachedKey: string, blob: Blob): void {
+  // Re-insert so the entry counts as most recently used for eviction.
+  blobCache.delete(cachedKey);
+  blobCache.set(cachedKey, blob);
+  while (blobCache.size > BLOB_CACHE_LIMIT) {
+    blobCache.delete(blobCache.keys().next().value!);
+  }
+}
+
+function dropCachedBlobs(prefix: string): void {
+  for (const cachedKey of Array.from(blobCache.keys())) {
+    if (cachedKey.startsWith(prefix)) blobCache.delete(cachedKey);
+  }
+}
+
+/** Synchronous cache check — a warm photo can render without waiting a tick. */
+export function peekCachedFile(projectId: string, key: string): Blob | undefined {
+  return blobCache.get(fileKey(projectId, key));
+}
+
+/** getFile that prefers the in-memory cache and fills it on a miss. */
+export async function cachedGetFile(projectId: string, key: string): Promise<Blob | undefined> {
+  const cachedKey = fileKey(projectId, key);
+  const hit = blobCache.get(cachedKey);
+  if (hit) return hit;
+  const blob = await getFile(projectId, key);
+  if (blob) rememberBlob(cachedKey, blob);
+  return blob;
 }
 
 /** All files of a project, keyed by their in-project fileKey. */
 export async function listFiles(projectId: string): Promise<Map<string, Blob>> {
-  const database = await db();
-  const keys = (await database.getAllKeys("files")) as string[];
-  const prefix = `${projectId}/`;
   const out = new Map<string, Blob>();
-  for (const key of keys) {
-    if (!key.startsWith(prefix)) continue;
-    const blob = storedToBlob(await database.get("files", key));
-    if (blob) out.set(key.slice(prefix.length), blob);
-  }
+  await eachProjectFile(projectId, (key, value) => {
+    const blob = storedToBlob(value);
+    if (blob) out.set(key, blob);
+  });
   return out;
+}
+
+/** Read every file record of one project in a single range-scoped
+ *  transaction. The old reader did one `get` per photo in a serial loop —
+ *  a hundred serial IndexedDB round-trips were why whole-deck previews took
+ *  seconds to appear. One bulk scan plus two parallel requests is the
+ *  difference between "loading" and "there". */
+async function eachProjectFile(
+  projectId: string,
+  visit: (fileKey: string, value: unknown) => void,
+): Promise<void> {
+  const database = await db();
+  const prefix = `${projectId}/`;
+  // Inclusive upper bound one past every real key: string keys sort as
+  // UTF-16 code units, and every unit is ≤ \uffff.
+  const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
+  const tx = database.transaction("files", "readonly");
+  const store = tx.objectStore("files");
+  // getAllKeys and getAll return records in the same (key) order, and the
+  // shared transaction guarantees they describe the same snapshot.
+  const [keys, values] = (await Promise.all([
+    store.getAllKeys(range),
+    store.getAll(range),
+  ])) as [string[], unknown[]];
+  await tx.done;
+  for (let i = 0; i < keys.length; i++) {
+    visit(keys[i].slice(prefix.length), values[i]);
+  }
 }
 
 /** Just the fileKeys of a project's files — no blobs read. */
 export async function listFileKeys(projectId: string): Promise<Set<string>> {
   const database = await db();
-  const keys = (await database.getAllKeys("files")) as string[];
   const prefix = `${projectId}/`;
-  return new Set(keys.filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)));
+  const keys = (await database.getAllKeys(
+    "files",
+    IDBKeyRange.bound(prefix, `${prefix}\uffff`),
+  )) as string[];
+  return new Set(keys.map((k) => k.slice(prefix.length)));
 }
 
 // ---------- iNat API cache ----------

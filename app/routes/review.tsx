@@ -1,19 +1,23 @@
 import type { Route } from "./+types/review";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import { listFiles } from "~/lib/store";
 import type { Project, SpeciesEntry } from "~/lib/types";
 import { validateProject } from "~/lib/validate";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { allTags } from "~/components/TagsManager";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { useProjectDoc } from "~/lib/useProjectDoc";
+import { createBlobLoader } from "~/lib/blobLoader";
 
 /**
  * Whole-deck review: every card laid out front and back in one long grid so
  * a curator can scan for typos, bad crops, missing credits, and layout
  * issues without flipping through the study view.
  */
+
+/** How many photos' worth of fileKeys the page pins to the head of the load
+ *  queue — the first screen of cards, so they never wait behind the deck. */
+const HEAD_WARM_KEYS = 12;
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Deck Curator — review" }];
@@ -23,7 +27,11 @@ export default function ReviewPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const { project, notFound, loadError, saveError, update } = useProjectDoc(projectId);
-  const [blobMap, setBlobMap] = useState<Map<string, Blob>>(new Map());
+  // Photos load through a prioritized queue instead of one big all-or-nothing
+  // read: the first cards land first, the rest fill in as they scroll close
+  // to the viewport, and warm blobs (e.g. after a round trip to the editor)
+  // render immediately from memory.
+  const blobLoader = useMemo(() => createBlobLoader(projectId ?? ""), [projectId]);
   const [filter, setFilter] = useState<"all" | "flagged" | "issues" | "tag">("all");
   const [tagFilter, setTagFilter] = useState<string>("");
 
@@ -43,14 +51,9 @@ export default function ReviewPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
-  useEffect(() => {
-    if (!projectId) return;
-    void listFilesThenSet(projectId, setBlobMap);
-  }, [projectId]);
-
   const resolve: BlobResolver = useCallback(
-    async (fileKey) => blobMap.get(fileKey),
-    [blobMap],
+    (fileKey) => blobLoader.resolve(fileKey),
+    [blobLoader],
   );
 
   // Toggle the curator-only "needs review" flag; autosaves like any edit.
@@ -96,6 +99,26 @@ export default function ReviewPage() {
 
   const flaggedCount = project?.species.filter((s) => s.needsReview).length ?? 0;
   const issueCards = issueCountBySpecies.size;
+
+  // The first screen of cards, in display order, pinned to the head of the
+  // load queue so they start downloading before any scroll observation or
+  // filter change can reshuffle things. (Photos further down load on demand
+  // via CardPreview's viewport gate.)
+  const headFileKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const { species } of grouped) {
+      for (const s of species) {
+        for (const p of s.photos) {
+          if (p.fileKey) keys.push(p.fileKey);
+          if (keys.length >= HEAD_WARM_KEYS) return keys;
+        }
+      }
+    }
+    return keys;
+  }, [grouped]);
+  useEffect(() => {
+    blobLoader.prioritize(headFileKeys);
+  }, [blobLoader, headFileKeys]);
 
   // Where the editor should send the user back to: the review page with the
   // current filter intact, or the deck list when arriving from elsewhere.
@@ -277,12 +300,4 @@ export default function ReviewPage() {
       )}
     </main>
   );
-}
-
-async function listFilesThenSet(
-  projectId: string,
-  set: (files: Map<string, Blob>) => void,
-): Promise<void> {
-  const { listFiles } = await import("~/lib/store");
-  set(await listFiles(projectId));
 }

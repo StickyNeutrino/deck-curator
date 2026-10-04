@@ -2,7 +2,7 @@ import type { Route } from "./+types/species";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useMemo } from "react";
-import { getProject, saveProject, getFile, putFile, deleteFile, listFileKeys } from "~/lib/store";
+import { getProject, saveProject, putFile, deleteFile, listFileKeys, cachedGetFile } from "~/lib/store";
 import type { Project, SpeciesEntry, CardLayout } from "~/lib/types";
 import { referencedFileKeys } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
@@ -68,7 +68,7 @@ export default function SpeciesPage() {
   }, []);
 
   const resolve: BlobResolver = useCallback(
-    async (fileKey) => getFile(projectId ?? "", fileKey),
+    async (fileKey) => cachedGetFile(projectId ?? "", fileKey),
     [projectId],
   );
 
@@ -741,7 +741,7 @@ function PhotoThumb({
   useEffect(() => {
     let url: string | null = null;
     let cancelled = false;
-    void getFile(projectId, fileKey).then((blob) => {
+    void cachedGetFile(projectId, fileKey).then((blob) => {
       if (cancelled || !blob) return;
       url = URL.createObjectURL(blob);
       setSrc(url);
