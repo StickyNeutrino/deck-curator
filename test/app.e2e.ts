@@ -57,6 +57,9 @@ test("create → edit → export a deck", async ({ page }) => {
   // Export page: identity + validation, then download the zip.
   await page.goto(`/project/e2e-canyon/export`);
   await expect(page.getByTestId("validation-report")).toBeVisible();
+  // Options: history ships by default, shrinking is off until asked for.
+  await expect(page.getByTestId("include-history")).toBeChecked();
+  await expect(page.getByTestId("shrink-photos")).not.toBeChecked();
   const download = page.waitForEvent("download");
   await page.getByTestId("export-deck").click();
   expect((await download).suggestedFilename()).toMatch(/e2e-canyon.*\.zip$/);

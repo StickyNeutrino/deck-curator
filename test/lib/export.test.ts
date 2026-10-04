@@ -1,11 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { unzipSync } from "fflate";
-import { exportDeck, buildManifest, cardExportNames } from "~/lib/export";
+import {
+  exportDeck,
+  buildManifest,
+  cardExportNames,
+  cardFromSpecies,
+  planCropBakes,
+  IDENTITY_CROP,
+} from "~/lib/export";
+import { collectGitDir } from "~/lib/versioning";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { saveProject, putFile } from "~/lib/store";
 import { validateProject } from "~/lib/validate";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
+
+// The sample projects have no git repo, and history shipping is only
+// observable with one — stub the collector (null = no history) so the
+// include/exclude tests can drive it directly.
+vi.mock("~/lib/versioning", () => ({
+  collectGitDir: vi.fn(async () => null),
+}));
 
 function sampleProject() {
   const project = newProject(`Sample ${crypto.randomUUID().slice(0, 8)}`);
@@ -178,6 +193,88 @@ describe("animation export", () => {
     expect(card.photos[0].animation).toEqual({
       file: "photos/oak-anim.mp4", kind: "video", durationSec: 4.5,
     });
+  });
+});
+
+describe("export options", () => {
+  const history = new Map([[".git/HEAD", new Uint8Array([1, 2, 3])]]);
+
+  it("bundles the git history by default", async () => {
+    vi.mocked(collectGitDir).mockResolvedValue(history);
+    const project = sampleProject();
+    await saveProject(project);
+    const { blob } = await exportDeck(project);
+    const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
+    expect(Object.keys(files)).toContain(".git/HEAD");
+  });
+
+  it("omits the history when includeHistory is false", async () => {
+    vi.mocked(collectGitDir).mockResolvedValue(history);
+    const project = sampleProject();
+    await saveProject(project);
+    const { blob } = await exportDeck(project, { includeHistory: false });
+    const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
+    expect(Object.keys(files).filter((k) => k.startsWith(".git/"))).toEqual([]);
+    expect(Object.keys(files)).toContain("manifest.json");
+  });
+
+  it("passes undecodable files through untouched when shrinking (no baked crop)", async () => {
+    const project = sampleProject();
+    project.species[0].photos[0].crop = { x: 0.1, y: 0.2, w: 0.6, h: 0.8 };
+    await saveProject(project);
+    await putFile(project.id, "dwarf-nettle-main.jpg", new Blob(["main-jpg-bytes"]));
+    await putFile(project.id, "dwarf-nettle-secondary-1.jpg", new Blob(["second-jpg-bytes"]));
+    await putFile(project.id, "dwarf-nettle-secondary-2.jpg", new Blob(["third-jpg-bytes"]));
+
+    const { blob } = await exportDeck(project, {
+      includeHistory: false,
+      shrink: { maxEdge: 1024, quality: 0.7 },
+    });
+    const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
+    // The bytes aren't decodable stills, so they ship as-is…
+    expect(new TextDecoder().decode(files["photos/dwarf-nettle-main.jpg"])).toBe("main-jpg-bytes");
+    // …and the manifest keeps the real crop window instead of an identity one.
+    const manifest = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
+    expect(manifest.categories[0].cards[0].photos[0].crop).toEqual({ x: 0.1, y: 0.2, w: 0.6, h: 0.8 });
+  });
+});
+
+describe("baked crops", () => {
+  const slotWith = (fileKey: string, crop?: { x: number; y: number; w: number; h: number }) => ({
+    id: `p-${fileKey}`,
+    role: "main" as const,
+    fileKey,
+    credit: { observer: "A", license: "cc0" },
+    ...(crop ? { crop } : {}),
+  });
+
+  it("writes an identity crop (and no focus) for baked stills", () => {
+    const s = makeSpecies({ commonName: "Oak", category: "plants" });
+    s.photos.push(slotWith("oak.jpg", { x: 0.1, y: 0.15, w: 0.7, h: 0.8 }));
+
+    const plain = cardFromSpecies(s) as any;
+    expect(plain.photos[0].crop).toEqual({ x: 0.1, y: 0.15, w: 0.7, h: 0.8 });
+
+    const baked = cardFromSpecies(s, undefined, { bakedCrops: new Set(["oak.jpg"]) }) as any;
+    expect(baked.photos[0].crop).toEqual(IDENTITY_CROP);
+  });
+
+  it("plans a bake per fileKey and drops shared-file conflicts", () => {
+    const project = newProject("Bake plan");
+    const shared = makeSpecies({ commonName: "Oak", category: "plants" });
+    shared.photos.push(slotWith("a.jpg", { x: 0, y: 0, w: 0.5, h: 0.5 }));
+    const clashing = makeSpecies({ commonName: "Ivy", category: "plants" });
+    clashing.photos.push(slotWith("a.jpg", { x: 0.2, y: 0, w: 0.5, h: 0.5 }));
+    const unshared = makeSpecies({ commonName: "Fern", category: "plants" });
+    unshared.photos.push(slotWith("b.jpg", { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }));
+    const uncropped = makeSpecies({ commonName: "Moss", category: "plants" });
+    uncropped.photos.push(slotWith("c.jpg"));
+    project.species.push(shared, clashing, unshared, uncropped);
+
+    const plan = planCropBakes(project);
+    expect(plan.has("a.jpg")).toBe(false); // two slots disagree — pass through
+    expect(plan.get("b.jpg")).toEqual({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
+    expect(plan.has("c.jpg")).toBe(false); // nothing to bake
   });
 });
 

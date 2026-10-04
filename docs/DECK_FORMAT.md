@@ -14,10 +14,21 @@ can later be committed to the app's `decks/` registry unchanged.
     └── ...
 ```
 
-Photo files are named after the species slug and their role, plus a short
-unique suffix (uploads may be replaced or several species can share a slug,
-so the file name can't be derived from position alone). Cards reference their
-photos by `file`, never by convention.
+Exports may also bundle the deck's **git history as a `.git/` directory** at
+the archive root (unzipping then yields a restorable repository). It is
+optional: an export can omit it to keep the archive small, and third-party
+decks never have one. Photo files are named after the species slug and their
+role, plus a short unique suffix (uploads may be replaced or several species
+can share a slug, so the file name can't be derived from position alone).
+Cards reference their photos by `file`, never by convention.
+
+An export may also **pre-crop and re-encode** photos (the curator's "Shrink
+photos" option): the shipped file contains only the crop region, and its
+manifest entry carries the identity crop `{ "x": 0, "y": 0, "w": 1, "h": 1 }`
+— "the whole file is the crop region". Renderers treat that exactly like any
+crop window, so pre-cropped photos render identically to crop metadata over
+the full original, just with fewer bytes. Full-resolution exports keep the
+original pixels and emit crop windows over them as usual.
 
 ## manifest.json
 

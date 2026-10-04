@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router";
 import { getProject, listProjects, renameProject, saveProject } from "~/lib/store";
 import type { Project } from "~/lib/types";
 import { exportDeck } from "~/lib/export";
+import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
 import { ensureRepo, isAutosaveCommit, listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { ProjectTabs } from "~/components/ProjectTabs";
@@ -26,6 +27,10 @@ export default function ExportPage() {
   const [done, setDone] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [missing, setMissing] = useState<ExportIssue[]>([]);
+  // History ships by default (round-trippable archives); shrinking is opt-in
+  // because it trades original bytes for smaller ones.
+  const [includeHistory, setIncludeHistory] = useState(true);
+  const [shrinkPreset, setShrinkPreset] = useState<ShrinkPreset | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -174,6 +179,61 @@ export default function ExportPage() {
 
       <VersionHistory project={project} onRestored={setProject} />
 
+      <section className="mb-6" data-testid="export-options">
+        <h2 className="font-semibold mb-2">Export options</h2>
+        <div className="flex flex-col gap-3 text-sm">
+          <label className="inline-flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={includeHistory}
+              onChange={(e) => setIncludeHistory(e.target.checked)}
+              data-testid="include-history"
+            />
+            <span>
+              Include version history (.git)
+              <span className="block text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                Bundles every saved version so an imported copy keeps its history. The history also
+                holds every past photo, which can dwarf the deck itself — untick for a lean share.
+              </span>
+            </span>
+          </label>
+          <label className="inline-flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={shrinkPreset !== null}
+              onChange={(e) => setShrinkPreset(e.target.checked ? "medium" : null)}
+              data-testid="shrink-photos"
+            />
+            <span>
+              Shrink photos
+              <span className="block text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                Re-encode stills as smaller JPEGs in your browser, cropping them to the edit you
+                picked. Animation clips pass through unchanged. Files only get smaller — anything
+                that can't be re-encoded ships as-is.
+              </span>
+            </span>
+          </label>
+          {shrinkPreset !== null && (
+            <label className="text-sm ml-6 flex items-center gap-2">
+              <span>Size</span>
+              <select
+                className="field text-sm"
+                style={{ maxWidth: 240 }}
+                value={shrinkPreset}
+                onChange={(e) => setShrinkPreset(e.target.value as ShrinkPreset)}
+                data-testid="shrink-preset"
+              >
+                <option value="small">Small — 1024px long edge</option>
+                <option value="medium">Medium — 1600px long edge</option>
+                <option value="large">Large — 2400px long edge</option>
+              </select>
+            </label>
+          )}
+        </div>
+      </section>
+
       <div className="mt-6 flex gap-2">
         <button
           className="btn-primary"
@@ -182,7 +242,10 @@ export default function ExportPage() {
           onClick={async () => {
             setExporting(true);
             try {
-              const { blob, filename } = await exportDeck(project);
+              const { blob, filename } = await exportDeck(project, {
+                includeHistory,
+                shrink: shrinkPreset ? SHRINK_PRESETS[shrinkPreset] : null,
+              });
               const a = document.createElement("a");
               a.href = URL.createObjectURL(blob);
               a.download = filename;
