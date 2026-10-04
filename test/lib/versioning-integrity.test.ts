@@ -7,7 +7,7 @@ import { makeSpecies } from "~/lib/types";
 import { toolResultMerger } from "~/lib/tools";
 import { saveProject, getProject, putFile, getFile, renameProject } from "~/lib/store";
 import { ensureRepo, commitDeckVersion, listVersions, restoreVersion, renameRepo } from "~/lib/versioning";
-import { exportDeck } from "~/lib/export";
+import { exportProjectFile } from "~/lib/export";
 import { importDeckArchive } from "~/lib/importDeck";
 import * as store from "~/lib/store";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
@@ -100,7 +100,7 @@ it("preserves history through an exported archive imported as a new deck", async
   await saveProject(p);
   await ensureRepo(p);
   await commitDeckVersion(p, undefined, "Named historical version");
-  const { blob } = await exportDeck(p);
+  const { blob } = await exportProjectFile(p);
   const imported = await importDeckArchive(new File([blob], "deck.zip"), { existingIds: [p.id] });
   await saveProject(imported);
   await ensureRepo(imported);

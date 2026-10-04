@@ -59,6 +59,8 @@ interface Manifest {
   description?: string;
   location?: ManifestLocation;
   cardFormat?: string;
+  /** "lite" = light deck: photos referenced remotely, nothing bundled. */
+  format?: string;
   categories?: Array<{ id: string; label: string; cards: ManifestCard[] }>;
 }
 
@@ -157,11 +159,20 @@ export async function importDeckArchive(
   if (!manifest.id || !Array.isArray(manifest.categories)) {
     throw new Error(`"${file.name}" is not a deck archive (manifest is missing id/categories).`);
   }
+  // Light decks reference their photos by URL — importing one here would
+  // produce cards with no image data and no way to re-fetch the exact
+  // photos. Send people to the full artifact instead.
+  if (manifest.format === "lite") {
+    throw new Error(
+      `"${file.name}" is a light deck (photos fetched at runtime, not bundled) — ` +
+        `import the full .deck or .zip file instead.`,
+    );
+  }
 
   // The manifest's id is the deck's store key — never clobber an existing
   // deck that already uses it; uniquify instead.
   const deckId = uniqueId(
-    makeId(manifest.id || file.name.replace(/\.zip$/i, "")),
+    makeId(manifest.id || file.name.replace(/\.(zip|deck(?:\.lite)?)$/i, "")),
     opts.existingIds ?? [],
   );
   const now = new Date().toISOString();

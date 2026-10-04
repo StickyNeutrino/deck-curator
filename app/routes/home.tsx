@@ -148,7 +148,7 @@ export default function Home() {
             <input
               ref={archiveInputRef}
               type="file"
-              accept=".zip"
+              accept=".zip,.deck,.deck.lite"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -163,7 +163,7 @@ export default function Home() {
               data-testid="import-deck"
               title="Open a deck exported from Deck Curator (or the flashcards app) and keep editing it"
             >
-              {importing ? "Importing…" : "Import deck (.zip)…"}
+              {importing ? "Importing…" : "Import deck (.zip / .deck)…"}
             </button>
           </div>
         )}

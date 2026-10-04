@@ -5,8 +5,20 @@ that can be uploaded into the Flashcard app ("user decks"), and it doubles as
 a deck repository layout (`manifest.json` + image directory) so curated decks
 can later be committed to the app's `decks/` registry unchanged.
 
+Deck Curator exports three artifacts, each with one job:
+
+| Artifact | Extension | Contents | Job |
+|---|---|---|---|
+| Project file | `.zip` | manifest + photos + `.git/` | The full backup — history and all |
+| Deck file | `.deck` | manifest + photos | What users study |
+| Light deck | `.deck.lite` | manifest only | Microscopic; photos fetched at runtime |
+
+The **project file** and **deck file** are the same archive layout; the deck
+file simply omits the optional `.git/` directory and wears the `.deck`
+extension. The **light deck** is a different beast — see "Light decks" below.
+
 ```
-<deck-id>.zip
+<deck-id>.zip / <deck-id>.deck
 ├── manifest.json
 └── photos/
     ├── <slug>-main-<unique>.jpg
@@ -14,21 +26,23 @@ can later be committed to the app's `decks/` registry unchanged.
     └── ...
 ```
 
-Exports may also bundle the deck's **git history as a `.git/` directory** at
-the archive root (unzipping then yields a restorable repository). It is
-optional: an export can omit it to keep the archive small, and third-party
-decks never have one. Photo files are named after the species slug and their
-role, plus a short unique suffix (uploads may be replaced or several species
-can share a slug, so the file name can't be derived from position alone).
-Cards reference their photos by `file`, never by convention.
+The **project file** bundles the deck's **git history as a `.git/` directory**
+at the archive root (unzipping then yields a restorable repository). The deck
+file omits it: the history holds every past photo too and often dwarfs the
+deck itself. Third-party decks never have one. Photo files are named after
+the species slug and their role, plus a short unique suffix (uploads may be
+replaced or several species can share a slug, so the file name can't be
+derived from position alone). Cards reference their photos by `file`, never
+by convention.
 
-An export may also **pre-crop and re-encode** photos (the curator's "Shrink
-photos" option): the shipped file contains only the crop region, and its
-manifest entry carries the identity crop `{ "x": 0, "y": 0, "w": 1, "h": 1 }`
+A deck file export may also **pre-crop and re-encode** photos (the curator's
+"Compress photos" option): the shipped file contains only the crop region, and
+its manifest entry carries the identity crop `{ "x": 0, "y": 0, "w": 1, "h": 1 }`
 — "the whole file is the crop region". Renderers treat that exactly like any
 crop window, so pre-cropped photos render identically to crop metadata over
 the full original, just with fewer bytes. Full-resolution exports keep the
-original pixels and emit crop windows over them as usual.
+original pixels and emit crop windows over them as usual. Project files
+always ship original bytes — they carry the history those bytes belong to.
 
 ## manifest.json
 
@@ -121,6 +135,68 @@ iNat-derived photos must pass the same allowlist as the Healthy Canyons
 pipeline (no ND variants, no missing license). User-uploaded photos may declare
 `all-rights-reserved` (their own work) — the credit line still renders.
 
+## Light decks (`.deck.lite`)
+
+A **light deck** is a zip containing only `manifest.json` — no `photos/`
+directory. It is microscopic (KBs for a hundred-card deck): the manifest
+carries the borders, rarity, crop windows, and credits, while the photos are
+**fetched at render time and cropped on the user's device**.
+
+```jsonc
+{
+  "id": "my-canyon-deck",
+  "label": "🌿 My Canyon Deck",
+  // …same top-level shape as a full manifest…
+  "cardFormat": "data",
+  "format": "lite",                    // marks remote-media decks (no bundled files)
+  "categories": [
+    {
+      "id": "plants",
+      "label": "🌿 Plants",
+      "cards": [
+        {
+          "name": "Dwarf Nettle",
+          "layout": "photo-trio",
+          "photos": [
+            {
+              "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/123/original.jpg",  // instead of `file`
+              "role": "main",
+              "crop": { "x": 0.1, "y": 0, "w": 0.6, "h": 0.8 },   // applied after fetch, on-device
+              "credit": { /* PhotoCredit — REQUIRED, exactly as in full decks */ }
+            }
+          ]
+          // …same card fields as the data format…
+        }
+      ]
+    }
+  ]
+}
+```
+
+Contract and constraints:
+
+- **`format: "lite"`** is the machine-readable marker; a light deck's zip has
+  no `photos/` directory. Every photo entry carries `url` where a full deck
+  would carry `file`.
+- **Size variants derive from one URL**: iNat URLs differ only in the size
+  segment (`square|thumb|small|medium|large|original`), so a renderer can
+  fetch a small variant for thumbnails and a larger one for card rendering.
+- **Cropping is on-device**: the normalized `crop` window (or legacy
+  `focus`) applies after fetch, exactly as over bundled bytes. iNaturalist's
+  open-data host serves `Access-Control-Allow-Origin: *`, so both CSS-based
+  mapping and canvas cropping work cross-origin.
+- **Credits ride in the manifest**, so attribution renders even though the
+  bytes come from the network — same license rules as full decks.
+- **Only remotely sourced photos can ship light.** Uploaded photos have no
+  URL to fetch; the curator refuses the export and names them. Animated
+  media is also excluded for now (its display still is captured locally and
+  has no remote source).
+- **They are live-linked, not archived**: photos live on iNaturalist's
+  servers, so a light deck needs network at render time and can break if a
+  source photo disappears. Use the deck file (or project file) when bytes
+  must be guaranteed. Deck Curator cannot import a light deck — import the
+  full `.deck` or `.zip` instead.
+
 ## Rendering rules (shared by Curator preview and Flashcard app)
 
 Card canvas is a 750×1050 portrait card with background `#e4e3df`:
@@ -135,7 +211,7 @@ Card canvas is a 750×1050 portrait card with background `#e4e3df`:
   A deck that uses only single-photo cards renders like a "one big photo" deck.
 - **Moving media**: when a card uses an animated GIF or video clip, `file`
   is the *still frame* the curator picked (that's what every renderer
-  displays), and `animation` carries the clip itself for players. Cards never
+  displays), and `animation` carries the clip itself for playback. Cards never
   autoplay clips.
 - **Focal point**: photos are cover-cropped to their slot by default.
   `photos[].crop` ({x, y, w, h} normalized 0..1) selects the exact source

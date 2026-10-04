@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { unzipSync } from "fflate";
 import {
-  exportDeck,
+  exportProjectFile,
+  exportDeckFile,
+  exportLightDeck,
   buildManifest,
   cardExportNames,
   cardFromSpecies,
@@ -17,9 +19,18 @@ import { blobToArrayBuffer } from "~/lib/blobUtils";
 
 // The sample projects have no git repo, and history shipping is only
 // observable with one — stub the collector (null = no history) so the
-// include/exclude tests can drive it directly.
+// project/deck file tests can drive it directly.
 vi.mock("~/lib/versioning", () => ({
   collectGitDir: vi.fn(async () => null),
+}));
+
+// inatGet is stubbed so light-deck tests that DO need to backfill urls never
+// touch the network; tests with stored urls make no calls at all.
+vi.mock("~/lib/inat", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/lib/inat")>()),
+  inatGet: vi.fn(async () => {
+    throw new Error("HTTP 502");
+  }),
 }));
 
 function sampleProject() {
@@ -97,16 +108,16 @@ describe("manifest builder", () => {
   });
 });
 
-describe("deck export", () => {
-  it("produces a zip with manifest.json and photo files", async () => {
+describe("deck file export", () => {
+  it("produces a .deck zip with manifest.json and photo files", async () => {
     const project = sampleProject();
     await saveProject(project);
     await putFile(project.id, "dwarf-nettle-main.jpg", new Blob(["main-jpg-bytes"]));
     await putFile(project.id, "dwarf-nettle-secondary-1.jpg", new Blob(["second-jpg-bytes"]));
     await putFile(project.id, "dwarf-nettle-secondary-2.jpg", new Blob(["third-jpg-bytes"]));
 
-    const { blob, filename } = await exportDeck(project);
-    expect(filename).toMatch(/^sample-.*\.zip$/);
+    const { blob, filename } = await exportDeckFile(project);
+    expect(filename).toMatch(/^sample-.*\.deck$/);
     const bytes = new Uint8Array(await blobToArrayBuffer(blob));
     const files = unzipSync(bytes);
 
@@ -125,7 +136,7 @@ describe("deck export", () => {
   it("exports without missing photo blobs (deleted while editing)", async () => {
     const project = sampleProject();
     await saveProject(project);
-    const { blob } = await exportDeck(project);
+    const { blob } = await exportDeckFile(project);
     const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
     expect(Object.keys(files)).toEqual(["manifest.json"]);
     const manifest = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
@@ -183,7 +194,7 @@ describe("animation export", () => {
     await putFile(project.id, "oak-frame.jpg", new Blob(["still"]));
     await putFile(project.id, "oak-anim.mp4", new Blob(["clip"]));
 
-    const { blob } = await exportDeck(project);
+    const { blob } = await exportDeckFile(project);
     const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
     expect(Object.keys(files)).toContain("photos/oak-anim.mp4");
     expect(Object.keys(files)).toContain("photos/oak-frame.jpg");
@@ -196,23 +207,24 @@ describe("animation export", () => {
   });
 });
 
-describe("export options", () => {
+describe("project file vs deck file", () => {
   const history = new Map([[".git/HEAD", new Uint8Array([1, 2, 3])]]);
 
-  it("bundles the git history by default", async () => {
+  it("the project file bundles the git history", async () => {
     vi.mocked(collectGitDir).mockResolvedValue(history);
     const project = sampleProject();
     await saveProject(project);
-    const { blob } = await exportDeck(project);
+    const { blob, filename } = await exportProjectFile(project);
+    expect(filename).toMatch(/^sample-.*\.zip$/);
     const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
     expect(Object.keys(files)).toContain(".git/HEAD");
   });
 
-  it("omits the history when includeHistory is false", async () => {
+  it("the deck file never carries history", async () => {
     vi.mocked(collectGitDir).mockResolvedValue(history);
     const project = sampleProject();
     await saveProject(project);
-    const { blob } = await exportDeck(project, { includeHistory: false });
+    const { blob } = await exportDeckFile(project);
     const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
     expect(Object.keys(files).filter((k) => k.startsWith(".git/"))).toEqual([]);
     expect(Object.keys(files)).toContain("manifest.json");
@@ -226,8 +238,7 @@ describe("export options", () => {
     await putFile(project.id, "dwarf-nettle-secondary-1.jpg", new Blob(["second-jpg-bytes"]));
     await putFile(project.id, "dwarf-nettle-secondary-2.jpg", new Blob(["third-jpg-bytes"]));
 
-    const { blob } = await exportDeck(project, {
-      includeHistory: false,
+    const { blob } = await exportDeckFile(project, {
       shrink: { maxEdge: 1024, quality: 0.7 },
     });
     const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
@@ -236,6 +247,104 @@ describe("export options", () => {
     // …and the manifest keeps the real crop window instead of an identity one.
     const manifest = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
     expect(manifest.categories[0].cards[0].photos[0].crop).toEqual({ x: 0.1, y: 0.2, w: 0.6, h: 0.8 });
+  });
+});
+
+describe("light deck export", () => {
+  // Same deck as the full-format sample, but every photo remembers its
+  // remote source (what slotFromInatPhoto now records at pick time).
+  function sampleLightProject() {
+    const project = sampleProject();
+    project.species[0].photos.forEach((p, i) => {
+      p.url = `https://inaturalist-open-data.s3.amazonaws.com/photos/${100 + i}/original.jpg`;
+    });
+    return project;
+  }
+
+  it("ships a manifest-only zip whose photos reference URLs", async () => {
+    const project = sampleLightProject();
+    await saveProject(project);
+    const { blob, filename, manifest } = await exportLightDeck(project);
+    expect(filename).toMatch(/^sample-.*\.deck\.lite$/);
+    const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
+    expect(Object.keys(files)).toEqual(["manifest.json"]);
+    const parsed = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
+    expect(parsed.format).toBe("lite");
+    expect(parsed.cardFormat).toBe("data");
+    const card = parsed.categories[0].cards[0];
+    expect(card.photos[0].url).toBe("https://inaturalist-open-data.s3.amazonaws.com/photos/100/original.jpg");
+    expect(card.photos[0].file).toBeUndefined();
+    expect(card.invasive).toBe(true);
+    expect(card.rarity).toBeNull();
+    expect(manifest).toBeTruthy();
+  });
+
+  it("refuses decks holding photos with no remote source (uploads)", async () => {
+    const project = sampleLightProject();
+    project.species[0].photos[1].url = undefined; // simulates an upload slot
+    project.species[0].photos[1].id = "upload:abc";
+    await saveProject(project);
+    await expect(exportLightDeck(project)).rejects.toThrow(/no remote source/);
+  });
+
+  it("refuses decks with animated media", async () => {
+    const project = sampleLightProject();
+    project.species[0].photos[0].animation = { fileKey: "clip.mp4", kind: "video", url: "https://x/y.mp4" };
+    await saveProject(project);
+    await expect(exportLightDeck(project)).rejects.toThrow(/animated media/);
+  });
+
+  it("reports an iNat outage as retryable instead of per-photo noise", async () => {
+    // sampleProject's slots have no stored url, so the export must resolve
+    // them — and the stubbed inatGet above fails every batch.
+    const project = sampleProject();
+    await saveProject(project);
+    await expect(exportLightDeck(project)).rejects.toThrow(/couldn't be reached.*try again/);
+  });
+});
+
+describe("export progress & cancellation", () => {
+  it("reports photo phases as the deck is built", async () => {
+    const project = sampleProject();
+    project.species[0].photos[0].crop = { x: 0.1, y: 0, w: 0.5, h: 0.5 };
+    await saveProject(project);
+    await putFile(project.id, "dwarf-nettle-main.jpg", new Blob(["a"]));
+    await putFile(project.id, "dwarf-nettle-secondary-1.jpg", new Blob(["b"]));
+
+    const seen: Array<[number, number, string | undefined]> = [];
+    await exportDeckFile(project, {
+      shrink: { maxEdge: 1024, quality: 0.7 },
+      onProgress: (done, total, detail) => seen.push([done, total, detail]),
+    });
+    const details = seen.map(([, , d]) => d ?? "");
+    expect(details.some((d) => d.startsWith("Reading dwarf-nettle-main"))).toBe(true);
+    expect(details.some((d) => d.startsWith("Re-encoding dwarf-nettle-main"))).toBe(true);
+    // The undecodable blob still reports a re-encode attempt; packing closes.
+    expect(details[details.length - 1]).toBe("Packing…");
+    // done counts climb to the number of shipped files, never past it.
+    const total = seen[0][1];
+    expect(seen.every(([done, tot]) => tot === total && done <= tot)).toBe(true);
+  });
+
+  it("stops between photos when the signal aborts", async () => {
+    const project = sampleProject();
+    await saveProject(project);
+    // Three shipped files: aborting during the second must still throw
+    // before the third is read.
+    await putFile(project.id, "dwarf-nettle-main.jpg", new Blob(["a"]));
+    await putFile(project.id, "dwarf-nettle-secondary-1.jpg", new Blob(["b"]));
+    await putFile(project.id, "dwarf-nettle-secondary-2.jpg", new Blob(["c"]));
+
+    const controller = new AbortController();
+    await expect(
+      exportDeckFile(project, {
+        onProgress: (done, _total, detail) => {
+          // Abort after the first file has been read.
+          if (detail?.startsWith("Reading") && done >= 1) controller.abort();
+        },
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 });
 

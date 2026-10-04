@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { JobsDock, openJobsPanel } from "~/components/JobsDock";
-import { resetJobs, startJob, getJobs, type JobHandle } from "~/lib/jobs";
+import { getJobDownload, registerJobDownload, resetJobs, startJob, getJobs, type JobHandle } from "~/lib/jobs";
 
 /** A run that blocks until its signal aborts (cancellation fixture). */
 function untilAborted(h: JobHandle): Promise<never> {
@@ -107,5 +107,25 @@ describe("JobsDock", () => {
       openJobsPanel();
     });
     expect(await screen.findByTestId("jobs-modal")).toBeInTheDocument();
+  });
+
+  it("offers a re-download for files an export job produced, and drops it with the job", async () => {
+    const user = userEvent.setup();
+    const record = await startJob({ kind: "export-deck", label: "Exporting deck file (.deck)" }, async () => {
+      registerJobDownload((await getJobs())[0].id, new Blob(["deck-bytes"]), "my-deck.deck");
+      return "Saved my-deck.deck — check your downloads.";
+    });
+    render(<JobsDock />);
+    await user.click(screen.getByTestId("jobs-dock"));
+    const modal = screen.getByTestId("jobs-modal");
+
+    // The finished export carries a download button for the produced file.
+    const button = within(modal).getByTestId(`job-download-${record.id}`);
+    expect(button).toHaveTextContent("Download my-deck.deck");
+    await user.click(button); // must not throw (jsdom swallows the navigation)
+
+    // Removing the job also drops its bytes.
+    await user.click(within(modal).getByTestId(`job-remove-${record.id}`));
+    expect(getJobDownload(record.id)).toBeUndefined();
   });
 });

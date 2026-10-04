@@ -2,9 +2,10 @@ import type { Project } from "./types";
 import { listFileKeys } from "./store";
 
 /**
- * Pre-export validation. Issues don't block export — the flashcards app
- * tolerates partial decks — but the curator surfaces them so nobody ships a
- * deck of credit-less cards by accident.
+ * Pre-export validation. Nothing blocks export — but the severity says what
+ * an issue does to the finished deck: red ("error") can keep the flashcards
+ * app from importing or displaying it, amber ("warning") exports fine but is
+ * worth fixing before sharing, gray ("info") is just context.
  */
 
 export interface ExportIssue {
@@ -38,7 +39,12 @@ export function validateProject(project: Project): ExportIssue[] {
       issues.push({ severity: "error", message: "A species has neither a common nor a scientific name.", species: s.id });
     }
     if (!s.photos.length) {
-      issues.push({ severity: "warning", message: `${label}: card has no photos yet.`, speciesId: s.id });
+      issues.push({
+        severity: "error",
+        message: `${label}: card has no photos yet — the flashcards app can't display it, so the deck may not import. Add at least one photo.`,
+        species: label,
+        speciesId: s.id,
+      });
     } else if (s.layout === "photo-trio" && s.photos.length < 3) {
       issues.push({
         severity: "warning",

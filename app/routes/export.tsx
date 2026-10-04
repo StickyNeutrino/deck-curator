@@ -1,35 +1,56 @@
 import type { Route } from "./+types/export";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import { getProject, listProjects, renameProject, saveProject } from "~/lib/store";
+import { useParams } from "react-router";
+import { getProject } from "~/lib/store";
 import type { Project } from "~/lib/types";
-import { exportDeck } from "~/lib/export";
+import { exportProjectFile, exportDeckFile, exportLightDeck } from "~/lib/export";
 import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
-import { ensureRepo, isAutosaveCommit, listVersions, renameRepo, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { ensureRepo, isAutosaveCommit, listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { startJob, registerJobDownload } from "~/lib/jobs";
+import { openJobsPanel } from "~/components/JobsDock";
 import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
- * Pre-export review: deck identity, a validation report (names, photos,
- * credits, licensing), the git version history with restore, and the
- * archive build.
+ * Pre-export review: a validation report (names, photos, credits, licensing),
+ * the git version history with restore, and the three export artifacts
+ * (project file, deck file, light deck). Each export runs as a background
+ * job — the Jobs dock tracks progress (reading and re-encoding photos,
+ * resolving remote sources) and offers the produced file again if the
+ * browser's download didn't land. Deck identity (id, label) is edited on
+ * the Deck info tab.
  */
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Deck Curator — export" }];
 }
 
+type ExportKind = "project" | "deck" | "lite";
+
+const EXPORT_JOBS: Record<ExportKind, { kind: "export-project" | "export-deck" | "export-lite"; label: string }> = {
+  project: { kind: "export-project", label: "Exporting project file (.zip)" },
+  deck: { kind: "export-deck", label: "Exporting deck file (.deck)" },
+  lite: { kind: "export-lite", label: "Exporting light deck (.deck.lite)" },
+};
+
+/** Hand a produced file to the browser's download flow. */
+function saveFile(blob: Blob, filename: string): void {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 export default function ExportPage() {
   const { projectId } = useParams();
-  const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<ExportKind | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [missing, setMissing] = useState<ExportIssue[]>([]);
-  // History ships by default (round-trippable archives); shrinking is opt-in
-  // because it trades original bytes for smaller ones.
-  const [includeHistory, setIncludeHistory] = useState(true);
+  // Compressing is a deck-file option (smaller photos, crops baked in).
+  // Project files always ship original bytes — they carry the history.
   const [shrinkPreset, setShrinkPreset] = useState<ShrinkPreset | null>(null);
 
   useEffect(() => {
@@ -55,61 +76,47 @@ export default function ExportPage() {
     return () => { cancelled = true; };
   }, [project]);
 
-  // The deck id is the store key for the record, the photo files, and the git
-  // repo — editing it per keystroke duplicated decks and broke every photo.
-  // It now commits as an explicit, validated rename that migrates everything.
-  const [idDraft, setIdDraft] = useState<string | null>(null);
-  const [labelDraft, setLabelDraft] = useState<string | null>(null);
-  const [identityError, setIdentityError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState(false);
-
-  const commitLabel = useCallback(async () => {
-    if (!project || labelDraft === null) return;
-    const value = labelDraft;
-    setLabelDraft(null);
-    if (value === project.deckLabel) return;
-    const next = { ...project, deckLabel: value };
-    try {
-      await saveProject(next);
-      setProject(next);
+  // Run one of the three artifacts as a background job: the Jobs dock shows
+  // live progress (photo reading/re-encoding, source resolution) and the
+  // finished run carries a re-download button. The file is also handed to
+  // the browser's download flow as soon as the job completes, so the usual
+  // "it just saved" behavior stays. The light deck can refuse (decks with
+  // uploads/animations) — that surfaces as a failed job, here and in the dock.
+  const runExport = useCallback(
+    (kind: ExportKind) => {
+      if (!project || exporting !== null) return;
+      const { kind: jobKind, label } = EXPORT_JOBS[kind];
+      setExporting(kind);
       setSaveError(null);
-    } catch (err) {
-      setSaveError(`Couldn't save the label: ${err instanceof Error ? err.message : err}`);
-    }
-  }, [project, labelDraft]);
-
-  const commitId = useCallback(async () => {
-    if (!project || idDraft === null) return;
-    const newId = idDraft.trim();
-    setIdDraft(null);
-    setIdentityError(null);
-    if (!newId || newId === project.id) return;
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(newId)) {
-      setIdentityError("Ids are lowercase letters, numbers, and dashes.");
-      return;
-    }
-    try {
-      const taken = (await listProjects()).some((p) => p.id === newId);
-      if (taken) {
-        setIdentityError(`Another deck already uses the id “${newId}” — pick a different one.`);
-        return;
-      }
-      setRenaming(true);
-      const next = { ...project, id: newId };
-      await renameProject(project.id, next); // files + record move atomically
-      try {
-        await renameRepo(project.id, newId); // the git history follows the deck
-      } catch {
-        setIdentityError("Deck renamed, but its version history could not be moved — new versions start from here.");
-      }
-      setProject(next);
-      navigate(`/project/${newId}/export`, { replace: true });
-    } catch (err) {
-      setIdentityError(`Rename failed: ${err instanceof Error ? err.message : err}`);
-    } finally {
-      setRenaming(false);
-    }
-  }, [project, idDraft, navigate]);
+      openJobsPanel();
+      void startJob(
+        { kind: jobKind, label, projectId: project.id, projectName: project.name },
+        async (h) => {
+          const progress = (done: number, total: number, detail?: string) => h.progress(done, total, detail);
+          const result =
+            kind === "project"
+              ? await exportProjectFile(project, { onProgress: progress, signal: h.signal })
+              : kind === "deck"
+                ? await exportDeckFile(project, {
+                    shrink: shrinkPreset ? SHRINK_PRESETS[shrinkPreset] : null,
+                    onProgress: progress,
+                    signal: h.signal,
+                  })
+                : await exportLightDeck(project, { onProgress: progress, signal: h.signal });
+          if (h.signal.aborted) throw new DOMException("Aborted", "AbortError");
+          registerJobDownload(h.id, result.blob, result.filename);
+          saveFile(result.blob, result.filename);
+          return `Saved ${result.filename} to your downloads.`;
+        },
+      )
+        .then((record) => {
+          if (record.status === "completed") setDone(record.download?.filename ?? null);
+          else if (record.status === "failed") setSaveError(`Export failed: ${record.message ?? "unknown error"}`);
+        })
+        .finally(() => setExporting(null));
+    },
+    [project, exporting, shrinkPreset],
+  );
 
   if (!project) {
     return (
@@ -132,142 +139,123 @@ export default function ExportPage() {
           {saveError}
         </p>
       )}
-      <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>
-        Produces a zip with manifest.json plus the photo files. Upload it in the flashcards app's
-        menu to study it.
-      </p>
-
-      <section className="mb-6">
-        <h2 className="font-semibold mb-2">Deck identity</h2>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="text-sm">
-            <span className="label">Deck id (slug)</span>
-            <input
-              className="field font-mono"
-              value={idDraft ?? project.id}
-              disabled={renaming}
-              onChange={(e) => setIdDraft(e.target.value)}
-              onBlur={() => void commitId()}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitId(); } }}
-              data-testid="deck-id"
-            />
-          </label>
-          <label className="text-sm">
-            <span className="label">Deck label</span>
-            <input
-              className="field"
-              value={labelDraft ?? project.deckLabel}
-              onChange={(e) => setLabelDraft(e.target.value)}
-              onBlur={() => void commitLabel()}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitLabel(); } }}
-            />
-          </label>
-        </div>
-        {identityError && (
-          <p className="text-sm mt-2" role="alert" style={{ color: "var(--danger)" }} data-testid="identity-error">
-            {identityError}
-          </p>
-        )}
-        <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
-          The id is the deck's unique key in the flashcards app; the label is what players see in
-          the menu (emoji welcome). Changing the id moves the deck's photos and version history
-          with it. Both fields commit when you click away or press Enter.
-        </p>
-      </section>
 
       <ValidationReport issues={issues} />
 
       <VersionHistory project={project} onRestored={setProject} />
 
       <section className="mb-6" data-testid="export-options">
-        <h2 className="font-semibold mb-2">Export options</h2>
-        <div className="flex flex-col gap-3 text-sm">
-          <label className="inline-flex items-start gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={includeHistory}
-              onChange={(e) => setIncludeHistory(e.target.checked)}
-              data-testid="include-history"
-            />
-            <span>
-              Include version history (.git)
-              <span className="block text-xs mt-0.5" style={{ color: "var(--muted)" }}>
-                Bundles every saved version so an imported copy keeps its history. The history also
-                holds every past photo, which can dwarf the deck itself — untick for a lean share.
-              </span>
-            </span>
-          </label>
-          <label className="inline-flex items-start gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={shrinkPreset !== null}
-              onChange={(e) => setShrinkPreset(e.target.checked ? "medium" : null)}
-              data-testid="shrink-photos"
-            />
-            <span>
-              Shrink photos
-              <span className="block text-xs mt-0.5" style={{ color: "var(--muted)" }}>
-                Re-encode stills as smaller JPEGs in your browser, cropping them to the edit you
-                picked. Animation clips pass through unchanged. Files only get smaller — anything
-                that can't be re-encoded ships as-is.
-              </span>
-            </span>
-          </label>
-          {shrinkPreset !== null && (
-            <label className="text-sm ml-6 flex items-center gap-2">
-              <span>Size</span>
-              <select
-                className="field text-sm"
-                style={{ maxWidth: 240 }}
-                value={shrinkPreset}
-                onChange={(e) => setShrinkPreset(e.target.value as ShrinkPreset)}
-                data-testid="shrink-preset"
+        <h2 className="font-semibold mb-2">Export</h2>
+        <div className="flex flex-col gap-3">
+          <div className="rounded-lg border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-sm">Project file (.zip)</div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                  Stores the complete project: manifest, photos, version history, cards marked for
+                  review, and other curation details.
+                </div>
+              </div>
+              <button
+                className="btn-primary whitespace-nowrap"
+                data-testid="export-project"
+                disabled={exporting !== null}
+                onClick={() => runExport("project")}
               >
-                <option value="small">Small — 1024px long edge</option>
-                <option value="medium">Medium — 1600px long edge</option>
-                <option value="large">Large — 2400px long edge</option>
-              </select>
+                {exporting === "project" ? "Building…" : "Export"}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-lg border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-sm">Deck file (.deck)</div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                  Deck optimized for distribution: manifest and photos, no version history.
+                </div>
+              </div>
+              <button
+                className="btn-primary whitespace-nowrap"
+                data-testid="export-deck"
+                disabled={exporting !== null}
+                onClick={() => runExport("deck")}
+              >
+                {exporting === "deck" ? "Building…" : "Export"}
+              </button>
+            </div>
+            <label className="inline-flex items-start gap-2 cursor-pointer mt-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={shrinkPreset !== null}
+                onChange={(e) => setShrinkPreset(e.target.checked ? "medium" : null)}
+                data-testid="shrink-photos"
+              />
+              <span>
+                Compress photos
+                <span className="block text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                  Rewrites stills as smaller JPEGs in your browser, with your crop already applied.
+                  GIFs and video clips are left alone. Anything that can't be re-encoded ships
+                  as-is.
+                </span>
+              </span>
             </label>
-          )}
+            {shrinkPreset !== null && (
+              <label className="text-sm ml-6 mt-2 flex items-center gap-2">
+                <span>Size</span>
+                <select
+                  className="field text-sm"
+                  style={{ maxWidth: 240 }}
+                  value={shrinkPreset}
+                  onChange={(e) => setShrinkPreset(e.target.value as ShrinkPreset)}
+                  data-testid="shrink-preset"
+                >
+                  <option value="small">Small — 1024px long edge</option>
+                  <option value="medium">Medium — 1600px long edge</option>
+                  <option value="large">Large — 2400px long edge</option>
+                </select>
+              </label>
+            )}
+          </div>
+
+          <div className="rounded-lg border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-sm">
+                  Light deck (.deck.lite){" "}
+                  <span
+                    className="text-xs font-normal px-1.5 py-0.5 rounded"
+                    style={{ color: "var(--accent)", border: "1px solid var(--border)" }}
+                  >
+                    experimental
+                  </span>
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                  Only the manifest (names, rarity, crops, credits) and no photos; those are
+                  downloaded from iNaturalist when the deck is opened. The first export looks up
+                  each photo's URL, which takes a few seconds; after that it's cached. Decks with
+                  uploaded photos or animations can't go light.
+                </div>
+              </div>
+              <button
+                className="btn-primary whitespace-nowrap"
+                data-testid="export-lite"
+                disabled={exporting !== null}
+                onClick={() => runExport("lite")}
+              >
+                {exporting === "lite" ? "Building…" : "Export"}
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
-      <div className="mt-6 flex gap-2">
-        <button
-          className="btn-primary"
-          data-testid="export-deck"
-          disabled={exporting}
-          onClick={async () => {
-            setExporting(true);
-            try {
-              const { blob, filename } = await exportDeck(project, {
-                includeHistory,
-                shrink: shrinkPreset ? SHRINK_PRESETS[shrinkPreset] : null,
-              });
-              const a = document.createElement("a");
-              a.href = URL.createObjectURL(blob);
-              a.download = filename;
-              a.click();
-              URL.revokeObjectURL(a.href);
-              setDone(filename);
-              setSaveError(null);
-            } catch (err) {
-              setSaveError(`Export failed: ${err instanceof Error ? err.message : err}`);
-            } finally {
-              setExporting(false);
-            }
-          }}
-        >
-          {exporting ? "Building zip…" : "Export deck (.zip)"}
-        </button>
-        {done && (
-          <span className="text-sm self-center" data-testid="export-done" style={{ color: "var(--accent)" }}>
-            Saved {done} — check your downloads.
-          </span>
-        )}
-      </div>
+      {done && (
+        <p className="text-sm mb-4" data-testid="export-done" style={{ color: "var(--accent)" }}>
+          Saved {done} to your downloads.
+        </p>
+      )}
     </main>
   );
 }
@@ -305,8 +293,9 @@ function ValidationReport({ issues }: { issues: ExportIssue[] }) {
         </ul>
       )}
       <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
-        Warnings don't block export, but credits and names ship exactly as shown — fix them here
-        before sharing the deck.
+        <span style={{ color: "var(--danger)" }}>Red</span> issues can keep the flashcards app from
+        importing the deck. <span style={{ color: "var(--ink)" }}>Amber</span> ones export fine but
+        are worth fixing before you share. Export isn't blocked either way.
       </p>
     </section>
   );

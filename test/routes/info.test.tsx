@@ -63,6 +63,41 @@ describe("deck info page", () => {
     });
   });
 
+  it("renames the deck id and moves the record with it", async () => {
+    const user = userEvent.setup();
+    const project = await fixture();
+    renderInfo(project.id);
+
+    const idField = await screen.findByTestId("deck-id");
+    expect(idField).toHaveValue(project.id);
+    await user.clear(idField);
+    await user.type(idField, "renamed-id");
+    await user.click(screen.getByTestId("deck-label")); // blur commits the rename
+
+    // The page follows the deck to its new id.
+    await waitFor(() => {
+      expect(screen.getByTestId("deck-id")).toHaveValue("renamed-id");
+    });
+    await waitFor(async () => {
+      expect(await getProject("renamed-id")).not.toBeNull();
+      expect(await getProject(project.id)).toBeUndefined();
+    });
+  });
+
+  it("rejects ids outside the slug alphabet without renaming", async () => {
+    const user = userEvent.setup();
+    const project = await fixture();
+    renderInfo(project.id);
+
+    const idField = await screen.findByTestId("deck-id");
+    await user.clear(idField);
+    await user.type(idField, "Bad Id!");
+    await user.click(screen.getByTestId("deck-label")); // blur commits
+
+    expect(await screen.findByTestId("identity-error")).toHaveTextContent(/lowercase letters/);
+    expect(await getProject(project.id)).not.toBeNull();
+  });
+
   it("shows the deck location, categories, and tags managers", async () => {
     const project = await fixture();
     renderInfo(project.id);

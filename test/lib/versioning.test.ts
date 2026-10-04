@@ -6,7 +6,7 @@ import { commitDeckVersion, ensureRepo, listVersions, restoreVersion } from "~/l
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { saveProject, putFile, getFile } from "~/lib/store";
-import { exportDeck } from "~/lib/export";
+import { exportProjectFile } from "~/lib/export";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
 
 function sample() {
@@ -95,13 +95,13 @@ describe("git versioning", () => {
     expect(messages).toContain("add photo");
   }, 60000);
 
-  it("export includes the git dir so the zip is a real repository", async () => {
+  it("project file export includes the git dir so the zip is a real repository", async () => {
     const project = sample();
     await saveProject(project);
     await ensureRepo(project);
     await commitDeckVersion(project, undefined, "history marker");
 
-    const { blob } = await exportDeck(project);
+    const { blob } = await exportProjectFile(project);
     const files = unzipSync(new Uint8Array(await blobToArrayBuffer(blob)));
     expect(Object.keys(files)).toContain("manifest.json");
     expect(Object.keys(files).some((k) => k.startsWith(".git/"))).toBe(true);

@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   cancelJob,
   clearFinishedJobs,
+  getJobDownload,
   getJobs,
   markJobsSeen,
+  registerJobDownload,
   removeJob,
   resetJobs,
   startJob,
@@ -88,6 +90,20 @@ describe("job manager", () => {
     const persisted = JSON.parse(window.localStorage.getItem("deck-curator.jobs.v1") ?? "[]");
     expect(persisted.map((j: { label: string }) => j.label)).toEqual(["Finished"]);
     expect(persisted[0].message).toBe("done");
+  });
+
+  it("persists export records without their download (the bytes die with the page)", async () => {
+    const settled = startJob({ kind: "export-deck", label: "Exporting deck file (.deck)" }, async (h) => {
+      registerJobDownload(h.id, new Blob(["bytes"]), "deck.deck");
+      return "Saved deck.deck — check your downloads.";
+    });
+    const record = await settled;
+    // In-session: the record and the registry both know the file.
+    expect(record.download).toEqual({ filename: "deck.deck" });
+    expect(getJobDownload(record.id)?.filename).toBe("deck.deck");
+    // Persisted (what a reload loads): no download field.
+    const persisted = JSON.parse(window.localStorage.getItem("deck-curator.jobs.v1") ?? "[]");
+    expect(persisted[0].download).toBeUndefined();
   });
 
   it("restores history from localStorage on load (running records are dropped)", async () => {

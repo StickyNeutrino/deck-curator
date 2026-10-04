@@ -1,5 +1,6 @@
 import type { Route } from "./+types/info";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
+import { useCallback, useState } from "react";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { LocationPicker } from "~/components/LocationPicker";
 import { CategoriesManager } from "~/components/CategoriesManager";
@@ -7,13 +8,15 @@ import { TagsManager } from "~/components/TagsManager";
 import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
 import { searchSettingsOf } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
+import { listProjects, renameProject } from "~/lib/store";
+import { renameRepo } from "~/lib/versioning";
 
 /**
- * Deck info: everything about the deck itself — name, description, its
- * location, category taxonomy, tags, and the iNaturalist search constraints
- * (licenses, research grade) that govern photo picking everywhere — kept off
- * the card-editing screen so the map and metadata don't crowd the species
- * work.
+ * Deck info: everything about the deck itself — name and id, description,
+ * its location, category taxonomy, tags, and the iNaturalist search
+ * constraints (licenses, research grade) that govern photo picking
+ * everywhere — kept off the card-editing screen so the map and metadata
+ * don't crowd the species work.
  */
 
 export function meta({}: Route.MetaArgs) {
@@ -22,7 +25,49 @@ export function meta({}: Route.MetaArgs) {
 
 export default function InfoPage() {
   const { projectId } = useParams();
-  const { project, notFound, loadError, saveError, update } = useProjectDoc(projectId);
+  const navigate = useNavigate();
+  const { project, setProject, notFound, loadError, saveError, update } = useProjectDoc(projectId);
+
+  // The deck id is the store key for the record, the photo files, and the
+  // git repo — editing it per keystroke would duplicate decks and break
+  // every photo. It commits as an explicit, validated rename that migrates
+  // everything, and moves the page to the new id.
+  const [idDraft, setIdDraft] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+
+  const commitId = useCallback(async () => {
+    if (!project || idDraft === null) return;
+    const newId = idDraft.trim();
+    setIdDraft(null);
+    setIdentityError(null);
+    if (!newId || newId === project.id) return;
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(newId)) {
+      setIdentityError("Ids are lowercase letters, numbers, and dashes.");
+      return;
+    }
+    try {
+      const taken = (await listProjects()).some((p) => p.id === newId);
+      if (taken) {
+        setIdentityError(`Another deck already uses the id “${newId}” — pick a different one.`);
+        return;
+      }
+      setRenaming(true);
+      const next = { ...project, id: newId };
+      await renameProject(project.id, next); // files + record move atomically
+      try {
+        await renameRepo(project.id, newId); // the git history follows the deck
+      } catch {
+        setIdentityError("Deck renamed, but its version history could not be moved — new versions start from here.");
+      }
+      setProject(next);
+      navigate(`/project/${newId}/info`, { replace: true });
+    } catch (err) {
+      setIdentityError(`Rename failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setRenaming(false);
+    }
+  }, [project, idDraft, navigate, setProject]);
 
   if (notFound) {
     return (
@@ -73,6 +118,30 @@ export default function InfoPage() {
             onChange={(e) => update((d) => { d.deckLabel = e.target.value; })}
           />
         </label>
+        <label className="block mb-3">
+          <span className="label">Deck id (slug)</span>
+          <input
+            className="field font-mono"
+            style={{ maxWidth: 320 }}
+            value={idDraft ?? project.id}
+            disabled={renaming}
+            aria-label="Deck id"
+            data-testid="deck-id"
+            onChange={(e) => setIdDraft(e.target.value)}
+            onBlur={() => void commitId()}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitId(); } }}
+          />
+        </label>
+        {identityError && (
+          <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }} data-testid="identity-error">
+            {identityError}
+          </p>
+        )}
+        <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+          The id tells decks apart in the flashcards app, so it has to be unique. Changing it moves
+          the deck's photos and version history with it. It saves when you click away or press
+          Enter.
+        </p>
         <label className="block">
           <span className="label">Description — shown on the credits page</span>
           <textarea

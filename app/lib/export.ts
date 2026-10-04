@@ -1,15 +1,22 @@
 import { zipSync, type Zippable } from "fflate";
-import type { Project, SpeciesEntry } from "./types";
+import type { PhotoSlot, Project, SpeciesEntry } from "./types";
 import { creditFromSlot } from "./types";
 import { sanitizeFileName } from "./ids";
 import { listFiles } from "./store";
 import { blobToArrayBuffer } from "./blobUtils";
 import { shrinkPhotoBlob, type CropWindow } from "./imageShrink";
+import { backfillPhotoUrls } from "./photoSource";
 
 /**
- * Export a Project to the deck archive described in docs/DECK_FORMAT.md:
- * a zip with manifest.json + photos/<slug>-{main,secondary-N}.jpg.
- * The manifest is written in the data-card format the flashcard app renders.
+ * The three export artifacts (docs/DECK_FORMAT.md):
+ *
+ *  - Project file (.zip): everything — manifest, photos, and the git
+ *    history. Unzipping yields a restorable repository; this is the backup.
+ *  - Deck file (.deck): the playable deck — manifest + photos, no history.
+ *  - Light deck (.deck.lite): manifest only. Photos are referenced by their
+ *    remote source and fetched + cropped on the user's device, so the file
+ *    is microscopic. Only decks whose every photo has a remote source can
+ *    ship light (no uploads, no animated media).
  */
 
 export interface ExportResult {
@@ -18,16 +25,25 @@ export interface ExportResult {
   manifest: unknown;
 }
 
-/** Options for exportDeck; every field defaults to the historical behavior. */
-export interface ExportOptions {
-  /** Bundle the deck's git history (the .git/ directory) so the archive
-   *  doubles as a restorable repository. Default true — it's what makes an
-   *  export → import round trip keep every version, but it also ships every
-   *  past photo, which can dwarf the deck itself; lean shares turn it off. */
-  includeHistory?: boolean;
-  /** Re-encode stills to smaller JPEGs (crop baked in, long edge capped).
-   *  Animation clips pass through unchanged. Default off. */
-  shrink?: { maxEdge: number; quality: number } | null;
+/** Re-encode stills to smaller JPEGs (crop baked in, long edge capped).
+ *  Animation clips pass through unchanged. */
+export interface ShrinkOptions {
+  maxEdge: number;
+  quality: number;
+}
+
+/** Long-export plumbing: `onProgress` reports (done, total, what) as photos
+ *  are gathered and re-encoded — the same shape the Jobs dock renders — and
+ *  `signal` cancels between photos. */
+export interface ExportRunnerOptions {
+  onProgress?: (done: number, total: number, detail?: string) => void;
+  signal?: AbortSignal;
+}
+
+export interface DeckExportOptions extends ExportRunnerOptions {
+  /** Deck-file-only option: compress the shipped photos. Project files always
+   *  ship original bytes — they carry the history those bytes belong to. */
+  shrink?: ShrinkOptions | null;
 }
 
 /** The crop written to the manifest when the crop window is already baked
@@ -42,6 +58,9 @@ export interface ManifestOptions {
    *  manifest entries carry IDENTITY_CROP (and never a legacy focus point)
    *  so the flashcard app renders them unchanged. */
   bakedCrops?: Set<string>;
+  /** Light decks: slot id → original-size URL. Photo entries reference
+   *  `url` instead of shipping a `file`. */
+  remoteUrls?: Map<string, string>;
 }
 
 export function buildManifest(project: Project, opts: ManifestOptions = {}): object {
@@ -110,33 +129,40 @@ export function cardFromSpecies(
   exportName?: string,
   opts: ManifestOptions = {},
 ): object {
+  // Light decks reference remote sources; full decks ship bytes. They never
+  // mix — exportLightDeck resolves every URL before building the manifest.
+  const light = opts.remoteUrls !== undefined;
+  const photoEntry = (p: PhotoSlot): object => {
+    const baked = opts.bakedCrops?.has(p.fileKey) ?? false;
+    const media = light
+      ? { url: opts.remoteUrls!.get(p.id) }
+      : { file: `photos/${p.fileKey}` };
+    return {
+      ...media,
+      role: p.role,
+      alt: p.alt,
+      crop: baked ? IDENTITY_CROP : p.crop ? roundCrop(p.crop) : undefined,
+      // A legacy off-center focal point is kept as-is for older projects;
+      // it never rides along with a baked crop (there is no crop left to
+      // be off-center of).
+      focus:
+        !baked && !p.crop && p.focus && (Math.abs(p.focus.x - 0.5) > 0.01 || Math.abs(p.focus.y - 0.5) > 0.01)
+          ? { x: round2(p.focus.x), y: round2(p.focus.y) }
+          : undefined,
+      // Moving media: the display image is the still (`url`/`file` above);
+      // the clip rides along so users can play it back.
+      animation: p.animation
+        ? light
+          ? { url: p.animation.url, kind: p.animation.kind, durationSec: p.animation.durationSec }
+          : { file: `photos/${p.animation.fileKey}`, kind: p.animation.kind, durationSec: p.animation.durationSec }
+        : undefined,
+      credit: creditFromSlot(p),
+    };
+  };
   return {
     name: exportName ?? (s.commonName || s.sciName),
     layout: s.layout,
-    photos: s.photos.map((p) => {
-      // The crop is baked into the shipped pixels for these stills, so the
-      // manifest describes the file itself as the crop region.
-      const baked = opts.bakedCrops?.has(p.fileKey) ?? false;
-      return {
-        file: `photos/${p.fileKey}`,
-        role: p.role,
-        alt: p.alt,
-        crop: baked ? IDENTITY_CROP : p.crop ? roundCrop(p.crop) : undefined,
-        // A legacy off-center focal point is kept as-is for older projects;
-        // it never rides along with a baked crop (there is no crop left to
-        // be off-center of).
-        focus:
-          !baked && !p.crop && p.focus && (Math.abs(p.focus.x - 0.5) > 0.01 || Math.abs(p.focus.y - 0.5) > 0.01)
-            ? { x: round2(p.focus.x), y: round2(p.focus.y) }
-            : undefined,
-        // Moving media: the display image is `file` (the picked still); the
-        // clip itself is included so players can offer playback.
-        animation: p.animation
-          ? { file: `photos/${p.animation.fileKey}`, kind: p.animation.kind, durationSec: p.animation.durationSec }
-          : undefined,
-        credit: creditFromSlot(p),
-      };
-    }),
+    photos: s.photos.map(photoEntry),
     sciName: s.sciName || undefined,
     commonName: s.commonName || undefined,
     altNames: s.altNames.length ? s.altNames : undefined,
@@ -162,9 +188,15 @@ function roundCrop(c: { x: number; y: number; w: number; h: number }): { x: numb
   return { x: round2(c.x), y: round2(c.y), w: round2(c.w), h: round2(c.h) };
 }
 
-export async function exportDeck(project: Project, options: ExportOptions = {}): Promise<ExportResult> {
-  const includeHistory = options.includeHistory ?? true;
-  const shrink = options.shrink ?? null;
+/** Manifest + photo bytes (compress optional) — what a playable deck ships,
+ *  without history. Shared by the project and deck file exports. Photos are
+ *  read (and, with `shrink`, re-encoded) one unique file at a time so a
+ *  background job can report progress and cancel between files. */
+async function buildPhotoZip(
+  project: Project,
+  shrink: ShrinkOptions | null,
+  run: ExportRunnerOptions = {},
+): Promise<{ zip: Zippable; manifest: object }> {
   const files = await listFiles(project.id);
 
   // One crop window per still fileKey. A file shared by two slots must not
@@ -174,62 +206,158 @@ export async function exportDeck(project: Project, options: ExportOptions = {}):
   const cropByKey = shrink ? planCropBakes(project) : new Map<string, CropWindow>();
   const bakedCrops = new Set<string>();
 
-  const zip: Zippable = {};
+  // Pre-pass: the unique files this deck ships, in manifest order — moving
+  // media clips never get re-encoded (a browser can't re-encode GIF/MP4, and
+  // their display stills are separate JPEGs).
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const clips = new Set<string>();
+  for (const species of project.species) {
+    for (const slot of species.photos) {
+      if (slot.animation?.fileKey) clips.add(slot.animation.fileKey);
+      for (const key of [slot.fileKey, slot.animation?.fileKey]) {
+        if (!key || seen.has(key) || !files.has(key)) continue;
+        seen.add(key);
+        order.push(key);
+      }
+    }
+  }
+
   const bytesByKey = new Map<string, Uint8Array>();
+  for (let i = 0; i < order.length; i++) {
+    const key = order[i];
+    throwIfAborted(run.signal);
+    const blob = files.get(key)!;
+    run.onProgress?.(i, order.length, `Reading ${key}`);
+    let bytes = new Uint8Array(await blobToArrayBuffer(blob));
+    if (shrink && !clips.has(key)) {
+      run.onProgress?.(i, order.length, `Re-encoding ${key}`);
+      const out = await shrinkPhotoBlob(blob, {
+        crop: cropByKey.get(key),
+        maxEdge: shrink.maxEdge,
+        quality: shrink.quality,
+      });
+      if (out) {
+        if (cropByKey.get(key)) bakedCrops.add(key);
+        bytes = new Uint8Array(await blobToArrayBuffer(out));
+      }
+    }
+    bytesByKey.set(key, bytes);
+  }
+
+  const zip: Zippable = {};
   for (const species of project.species) {
     for (const slot of species.photos) {
       for (const key of [slot.fileKey, slot.animation?.fileKey]) {
-        if (!key) continue;
-        if (!bytesByKey.has(key)) {
-          const blob = files.get(key);
-          if (!blob) continue; // Missing from the store — skip, as before.
-          // Animation clips (GIF/MP4) always pass through: a browser can't
-          // re-encode them, and their display stills are separate JPEGs.
-          const isClip = key === slot.animation?.fileKey;
-          let out: Blob | null = null;
-          if (shrink && !isClip) {
-            out = await shrinkPhotoBlob(blob, {
-              crop: cropByKey.get(key),
-              maxEdge: shrink.maxEdge,
-              quality: shrink.quality,
-            });
-          }
-          if (out) {
-            if (cropByKey.get(key)) bakedCrops.add(key);
-            bytesByKey.set(key, new Uint8Array(await blobToArrayBuffer(out)));
-          } else {
-            bytesByKey.set(key, new Uint8Array(await blobToArrayBuffer(blob)));
-          }
-        }
-        const bytes = bytesByKey.get(key);
+        const bytes = key ? bytesByKey.get(key) : undefined;
         if (bytes) zip[`photos/${key}`] = bytes;
       }
     }
   }
 
+  run.onProgress?.(order.length, order.length, "Packing…");
   const manifest = buildManifest(project, shrink ? { bakedCrops } : {});
   zip["manifest.json"] = strToU8Json(manifest);
-  // Ship the project's git history inside the archive: unzipping yields a
-  // real git repository (drop it into decks/ and history stays intact).
-  // Optional because the history holds every past photo too — often the
-  // biggest part of the archive. When included, the history keeps the
-  // original photos even for a shrunk export.
-  if (includeHistory) {
-    try {
-      const { collectGitDir } = await import("./versioning");
-      const gitDir = await collectGitDir(project.id);
-      if (gitDir) {
-        for (const [path, data] of gitDir) {
-          zip[path] = data;
-        }
+  return { zip, manifest };
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
+/** The full backup: manifest, photos, and the project's git history.
+ *  Unzipping yields a real git repository (drop it into decks/ and history
+ *  stays intact). The history holds every past photo too — often the biggest
+ *  part of the archive — which is exactly why this and the deck file are
+ *  separate artifacts. */
+export async function exportProjectFile(
+  project: Project,
+  run: ExportRunnerOptions = {},
+): Promise<ExportResult> {
+  const { zip, manifest } = await buildPhotoZip(project, null, run);
+  try {
+    const { collectGitDir } = await import("./versioning");
+    const gitDir = await collectGitDir(project.id);
+    if (gitDir) {
+      for (const [path, data] of gitDir) {
+        zip[path] = data;
       }
-    } catch {
-      // No history available (versioning disabled) — export without .git.
+    }
+  } catch {
+    // No history available (versioning disabled) — export without .git.
+  }
+  return pack(zip, manifest, `${sanitizeFileName(project.id)}.zip`);
+}
+
+/** The playable deck: manifest + photos, no history. A zip wearing the
+ *  `.deck` extension — same layout, minus the repository. */
+export async function exportDeckFile(
+  project: Project,
+  options: DeckExportOptions = {},
+): Promise<ExportResult> {
+  const { zip, manifest } = await buildPhotoZip(project, options.shrink ?? null, options);
+  return pack(zip, manifest, `${sanitizeFileName(project.id)}.deck`);
+}
+
+/** The microscopic deck: manifest only, photos referenced by URL and fetched
+ *  + cropped on the user's device. Throws (with a per-photo list) when the
+ *  deck contains anything a light deck can't ship: photos with no remote
+ *  source (uploads, unresolvable iNat picks) or animated media. Resolving
+ *  sources for older decks hits the iNat API — progress and cancellation ride
+ *  on `run` like every other export. */
+export async function exportLightDeck(
+  project: Project,
+  run: ExportRunnerOptions = {},
+): Promise<ExportResult> {
+  const { urls, unresolved, apiFailed } = await backfillPhotoUrls(project, {
+    onProgress: (resolved, remaining) =>
+      run.onProgress?.(resolved, resolved + remaining, "Resolving photo sources"),
+    signal: run.signal,
+  });
+  throwIfAborted(run.signal);
+  if (apiFailed) {
+    throw new Error(
+      `iNaturalist couldn't be reached while resolving photo sources ` +
+        `(${unresolved.length} photo${unresolved.length === 1 ? "" : "s"} still unknown) — ` +
+        `try again in a minute.`,
+    );
+  }
+  const issues: string[] = [];
+  for (const species of project.species) {
+    const card = species.commonName || species.sciName || "card";
+    for (const slot of species.photos) {
+      if (slot.animation) {
+        issues.push(`${card}: animated media can't ship in a light deck (the display still is captured locally)`);
+        continue;
+      }
+      if (!slot.url && !urls.has(slot.id)) {
+        issues.push(`${card}: the ${slot.role} photo has no remote source to fetch at runtime`);
+      }
     }
   }
+  if (issues.length > 0) {
+    throw new Error(
+      `This deck can't export as a light deck yet:\n${issues.map((i) => `• ${i}`).join("\n")}`,
+    );
+  }
+
+  const remoteUrls = new Map<string, string>();
+  for (const species of project.species) {
+    for (const slot of species.photos) {
+      remoteUrls.set(slot.id, slot.url ?? urls.get(slot.id)!);
+    }
+  }
+  // `format: "lite"` marks the deck as remote-media: consumers can detect it
+  // without inspecting photo entries (whose `url` replaces `file`).
+  const manifest = { ...buildManifest(project, { remoteUrls }), format: "lite" };
+  const zip: Zippable = { "manifest.json": strToU8Json(manifest) };
+  return pack(zip, manifest, `${sanitizeFileName(project.id)}.deck.lite`);
+}
+
+function pack(zip: Zippable, manifest: object, filename: string): ExportResult {
   const packed = zipSync(zip, { level: 6 });
   const blob = new Blob([packed as unknown as BlobPart], { type: "application/zip" });
-  return { blob, filename: `${sanitizeFileName(project.id)}.zip`, manifest };
+  return { blob, filename, manifest };
 }
 
 /** The crop window carried by each still's fileKey, for baking at export.

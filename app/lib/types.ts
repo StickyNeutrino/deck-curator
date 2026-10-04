@@ -114,6 +114,11 @@ export interface PhotoSlot {
   credit: PhotoCredit;
   /** Key into the project's file store (the Blob lives in IndexedDB). */
   fileKey: string;
+  /** Remote source of the photo bytes — iNat's original-size URL. Set for
+   *  iNat picks; uploads have none. Lets a light-deck export reference the
+   *  photo by URL instead of shipping its bytes (sizes derive from one URL
+   *  by swapping the size segment, per inat.ts photoVariants). */
+  url?: string;
   alt?: string;
   /** Crop window over the source image, normalized 0..1. When absent the
    *  photo is cover-cropped centered. The editor picks the bounds; the
@@ -123,8 +128,9 @@ export interface PhotoSlot {
   focus?: { x: number; y: number };
   /** When the media moves (animated GIF or video clip): the stored clip.
    *  `fileKey` (above) is the still frame the curator picked — that's what
-   *  every renderer displays. */
-  animation?: { fileKey: string; kind: "gif" | "video"; durationSec?: number };
+   *  every renderer displays. `url` is the clip's remote source, when it
+   *  came from iNat. */
+  animation?: { fileKey: string; kind: "gif" | "video"; durationSec?: number; url?: string };
 }
 
 export interface SpeciesEntry {

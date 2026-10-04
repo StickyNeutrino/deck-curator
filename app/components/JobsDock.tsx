@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
   clearFinishedJobs,
+  getJobDownload,
   markJobsSeen,
   removeJob,
   unseenJobCount,
@@ -12,13 +13,14 @@ import {
 /**
  * The global Jobs dock: a small pill in the bottom-right corner of every
  * page that keeps long-running work visible and controllable. Bulk iNat
- * adds and deck tools run here — closing the Add-species modal or changing
- * pages never hides them.
+ * adds, deck tools, and deck exports run here — closing the Add-species
+ * modal or changing pages never hides them.
  *
  * The pill shows live progress while jobs run and a badge when finished
  * results haven't been looked at yet; the panel lists running jobs (progress
  * bar + cancel) above the history of finished runs with their outcome
- * summaries and the tools' "kept as-is" conflict reports.
+ * summaries, the tools' "kept as-is" conflict reports, and re-download
+ * buttons for files exports produced this session.
  */
 
 /** The Tools menu (and anything else) opens the panel by dispatching this. */
@@ -65,6 +67,17 @@ function JobProgress({ job }: { job: JobRecord }) {
       </div>
     </div>
   );
+}
+
+/** Re-download a file an export job produced this session. */
+function downloadJobResult(id: string): void {
+  const file = getJobDownload(id);
+  if (!file) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file.blob);
+  a.download = file.filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 function JobItem({ job }: { job: JobRecord }) {
@@ -118,6 +131,16 @@ function JobItem({ job }: { job: JobRecord }) {
         <p className="text-xs mt-2" style={{ color: "var(--muted)" }} data-testid={`job-message-${job.id}`}>
           {job.message}
         </p>
+      )}
+      {job.status === "completed" && job.download && getJobDownload(job.id) && (
+        <button
+          className="btn-secondary !px-2 !py-0.5 text-xs mt-2"
+          onClick={() => downloadJobResult(job.id)}
+          title="Save the file again"
+          data-testid={`job-download-${job.id}`}
+        >
+          Download {job.download.filename}
+        </button>
       )}
       {job.conflicts && job.conflicts.length > 0 && (
         <details className="mt-1 text-xs">
@@ -188,7 +211,7 @@ export function JobsDock() {
           className="btn-primary fixed bottom-4 right-4 z-40 shadow-lg rounded-full !px-4"
           onClick={openPanel}
           data-testid="jobs-dock"
-          title="Background jobs — bulk adds and deck tools"
+          title="Background jobs — bulk adds, deck tools, and deck exports"
         >
           {running.length > 0 ? (
             <>
@@ -226,8 +249,8 @@ export function JobsDock() {
               </button>
             </div>
             <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-              Long-running work — bulk adds from iNaturalist searches, deck tools — runs
-              here in the background. Closing a dialog or changing pages never stops a job.
+              Long-running work — bulk adds from iNaturalist searches, deck tools, deck exports —
+              runs here in the background. Closing a dialog or changing pages never stops a job.
             </p>
             {jobs.length === 0 ? (
               <p className="text-sm" style={{ color: "var(--muted)" }}>

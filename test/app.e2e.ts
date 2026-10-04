@@ -54,15 +54,17 @@ test("create → edit → export a deck", async ({ page }) => {
   await page.getByTestId("save-species").click();
   await expect(page.getByTestId("save-species")).toContainText("Save");
 
-  // Export page: identity + validation, then download the zip.
+  // Export page: validation, then download the deck.
   await page.goto(`/project/e2e-canyon/export`);
   await expect(page.getByTestId("validation-report")).toBeVisible();
-  // Options: history ships by default, shrinking is off until asked for.
-  await expect(page.getByTestId("include-history")).toBeChecked();
+  // Three artifacts on offer; shrinking is off until asked for.
+  await expect(page.getByTestId("export-project")).toBeVisible();
+  await expect(page.getByTestId("export-deck")).toBeVisible();
+  await expect(page.getByTestId("export-lite")).toBeVisible();
   await expect(page.getByTestId("shrink-photos")).not.toBeChecked();
   const download = page.waitForEvent("download");
   await page.getByTestId("export-deck").click();
-  expect((await download).suggestedFilename()).toMatch(/e2e-canyon.*\.zip$/);
+  expect((await download).suggestedFilename()).toMatch(/e2e-canyon.*\.deck$/);
   await expect(page.getByTestId("export-done")).toBeVisible();
 });
 test("review screen: flag cards, filter, and jump to edit", async ({ page }) => {
@@ -123,7 +125,7 @@ test("location picker sets the deck location and the iNat scope", async ({ page 
   await page.getByTestId("tab-export").click();
   const download = page.waitForEvent("download");
   await page.getByTestId("export-deck").click();
-  expect((await download).suggestedFilename()).toMatch(/geo-deck.*\.zip$/);
+  expect((await download).suggestedFilename()).toMatch(/geo-deck.*\.deck$/);
 });
 
 test("map marker icon actually loads (no broken default-icon path)", async ({ page }) => {

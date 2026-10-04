@@ -292,6 +292,9 @@ export function slotFromInatPhoto(
     role,
     credit: creditForObservation(obs, photo),
     fileKey,
+    // Remember the remote source (original-size URL) so exports can
+    // reference the photo instead of shipping its bytes (light decks).
+    url: photoVariants(photo)[0],
     alt,
   };
 }

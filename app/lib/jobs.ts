@@ -16,7 +16,15 @@ import { uuid } from "./uuid";
  * kills them by definition (they live in this page's JS context).
  */
 
-export type JobKind = "inat-add" | "tool-enrich" | "tool-native" | "tool-rarity" | "tool-photos";
+export type JobKind =
+  | "inat-add"
+  | "tool-enrich"
+  | "tool-native"
+  | "tool-rarity"
+  | "tool-photos"
+  | "export-project"
+  | "export-deck"
+  | "export-lite";
 
 export type JobStatus = "running" | "completed" | "failed" | "cancelled";
 
@@ -45,6 +53,11 @@ export interface JobRecord {
   message?: string;
   /** Tool conflicts: values the curator set that differ from iNat's. */
   conflicts?: JobConflict[];
+  /** Export jobs: the file that was produced. The bytes themselves live in
+   *  an in-memory registry (`registerJobDownload`) — they die with the page,
+   *  so this field is stripped before the history is persisted and a reload
+   *  leaves the record without a download button. */
+  download?: { filename: string };
 }
 
 /** What a run hands back when it completes: a summary line and/or
@@ -138,7 +151,11 @@ function emit(): void {
 function persist(): void {
   try {
     if (typeof window === "undefined") return;
-    const finished = jobs.filter((j) => j.status !== "running").slice(0, HISTORY_LIMIT);
+    // Downloadable bytes don't survive a reload — never persist the field.
+    const finished = jobs
+      .filter((j) => j.status !== "running")
+      .slice(0, HISTORY_LIMIT)
+      .map(({ download, ...rest }) => rest);
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(finished));
   } catch {
     // Private mode / quota — the history is best-effort.
@@ -238,16 +255,41 @@ export function cancelJob(id: string): void {
 export function removeJob(id: string): void {
   jobs = jobs.filter((j) => j.id !== id);
   unseen.delete(id);
+  dropJobDownload(id);
   emit();
   persist();
 }
 
 /** Drop every finished job from the history (running ones keep going). */
 export function clearFinishedJobs(): void {
+  for (const j of jobs) {
+    if (j.status !== "running") dropJobDownload(j.id);
+  }
   jobs = jobs.filter((j) => j.status === "running");
   unseen.clear();
   emit();
   persist();
+}
+
+/** Downloadable results of export jobs, in memory for this page's lifetime:
+ *  the Jobs dock offers a re-download button until the page closes. */
+const downloads = new Map<string, { blob: Blob; filename: string }>();
+
+/** Attach a produced file to a job (export runners call this on success). */
+export function registerJobDownload(id: string, blob: Blob, filename: string): void {
+  downloads.set(id, { blob, filename });
+  update(id, (r) => {
+    r.download = { filename };
+  });
+}
+
+/** The bytes behind a job's download button, when still available. */
+export function getJobDownload(id: string): { blob: Blob; filename: string } | undefined {
+  return downloads.get(id);
+}
+
+export function dropJobDownload(id: string): void {
+  downloads.delete(id);
 }
 
 /** Wipe everything, running jobs included — test seeding only. */
@@ -256,6 +298,7 @@ export function resetJobs(): void {
   controllers.clear();
   jobs = [];
   unseen.clear();
+  downloads.clear();
   try {
     if (typeof window !== "undefined") window.localStorage.removeItem(STORAGE_KEY);
   } catch {

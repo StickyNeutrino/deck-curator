@@ -51,7 +51,12 @@ export async function acquireMediaSlot(
     await putFile(opts.projectId, posterKey, still);
     await putFile(opts.projectId, clipKey, blob);
     const slot = slotFromInatPhoto(photo, obs, opts.role, posterKey);
-    slot.animation = { fileKey: clipKey, kind };
+    // For moving media the slot's photo record IS the clip, so the URL that
+    // slotFromInatPhoto captured belongs to the animation — the display
+    // still is a locally captured frame with no remote source.
+    const clipUrl = slot.url;
+    delete slot.url;
+    slot.animation = { fileKey: clipKey, kind, url: clipUrl };
     return slot;
   }
 

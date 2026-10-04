@@ -1,7 +1,7 @@
 import type { PhotoSlot } from "./types";
 
 /**
- * Export-time photo shrinking (the "Shrink photos" export option): decode a
+ * Export-time photo compression (the "Compress photos" export option): decode a
  * stored still with the browser's own image codec, bake the slot's crop
  * window into the pixels, cap the long edge, and re-encode as JPEG. Pure
  * browser capability — canvas, no server, no wasm — guarded so a failed or
