@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { useMemo } from "react";
 import { getProject, saveProject, putFile, deleteFile, listFileKeys, cachedGetFile } from "~/lib/store";
-import type { Project, SpeciesEntry, CardLayout } from "~/lib/types";
+import type { Project, SpeciesEntry, CardLayout, PhotoCredit } from "~/lib/types";
 import { referencedFileKeys } from "~/lib/types";
 import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview";
 import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
@@ -14,6 +14,7 @@ import { BORDER_STYLES, searchSettingsOf, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { FrameModal } from "~/components/FrameModal";
+import { CreditModal, UPLOAD_DEFAULT_CREDIT } from "~/components/CreditModal";
 import { extractGifFrame, extractPosterFrame, isMediaFile } from "~/lib/motion";
 import { ReplacePicker } from "~/components/ReplacePicker";
 
@@ -439,6 +440,12 @@ function PhotosEditor({
   const [frameSlot, setFrameSlot] = useState<number | null>(null);
   /** Pending uploads waiting for a "replace which photo?" decision. */
   const [pendingReplace, setPendingReplace] = useState<{ files: File[] } | null>(null);
+  /** Files picked but not yet stored: the credit prompt is the last step
+   *  before their bytes hit the store (so Cancel aborts with no orphan
+   *  blobs). `replaceIndex` marks the full-card replace flow. */
+  const [pendingUploads, setPendingUploads] = useState<{ files: File[]; replaceIndex?: number } | null>(null);
+  /** Index of the photo whose credit is being edited in the modal. */
+  const [creditSlotIndex, setCreditSlotIndex] = useState<number | null>(null);
 
   const removePhoto = (slot: SpeciesEntry["photos"][number]) => {
     // The blob is garbage-collected at the next save; until then the saved
@@ -469,12 +476,12 @@ function PhotosEditor({
     if (idx >= 0) dropAt(idx, idx + dir);
   };
 
-  const addUploads = async (files: File[]) => {
+  const addUploads = async (files: File[], credit: PhotoCredit) => {
     let index = species.photos.length;
     for (const file of files) {
       if (index >= cap) break;
       const role: "main" | "secondary" = index === 0 ? "main" : "secondary";
-      const slot = await storeUpload(file, role);
+      const slot = await storeUpload(file, role, credit);
       if (slot) {
         onChange((d) => {
           d.photos.push(slot);
@@ -487,7 +494,7 @@ function PhotosEditor({
   /** Store one uploaded file (still or moving media) and return its slot.
    *  Moving media lands as clip + captured display still; decode failures
    *  clean up after themselves and return null. */
-  const storeUpload = async (file: File, role: "main" | "secondary"): Promise<PhotoSlotLike | null> => {
+  const storeUpload = async (file: File, role: "main" | "secondary", credit: PhotoCredit): Promise<PhotoSlotLike | null> => {
     const base = slugify(species.commonName || species.sciName || "photo");
     // A unique suffix: two species can share a slug, and a position-derived
     // key once overwrote the file another slot still referenced.
@@ -498,7 +505,7 @@ function PhotosEditor({
       return {
         id: `upload:${uuid()}`,
         role,
-        credit: { observer: "You", license: "all-rights-reserved" },
+        credit: { ...credit },
         fileKey,
         alt: file.name,
       };
@@ -521,7 +528,7 @@ function PhotosEditor({
     return {
       id: `upload:${uuid()}`,
       role,
-      credit: { observer: "You", license: "all-rights-reserved" },
+      credit: { ...credit },
       fileKey: posterKey,
       alt: file.name,
       animation: { fileKey: clipKey, kind: mediaKind },
@@ -531,11 +538,11 @@ function PhotosEditor({
   /** Uploads with a full card: replace the slot the curator picks. Works
    *  for stills AND moving media — the old files are garbage-collected at
    *  the next save. */
-  const replaceFirstUpload = async (files: File[], slotIndex: number) => {
+  const replaceFirstUpload = async (files: File[], slotIndex: number, credit: PhotoCredit) => {
     const file = files[0];
     const old = species.photos[slotIndex];
     if (!file || !old) return;
-    const fresh = await storeUpload(file, old.role);
+    const fresh = await storeUpload(file, old.role, credit);
     if (!fresh) return;
     onChange((d) => {
       const slot = d.photos[slotIndex];
@@ -629,6 +636,13 @@ function PhotosEditor({
               </button>
               <button
                 className="text-xs underline"
+                onClick={() => setCreditSlotIndex(i)}
+                data-testid={`credit-${slot.id}`}
+              >
+                credit
+              </button>
+              <button
+                className="text-xs underline"
                 style={{ color: "var(--danger)" }}
                 onClick={() => removePhoto(slot)}
               >
@@ -667,7 +681,9 @@ function PhotosEditor({
             // Full: ask which photo the first upload should replace.
             setPendingReplace({ files });
           } else {
-            void addUploads(files);
+            // Prompt for attribution before the photos land — uploads would
+            // otherwise carry the "You" placeholder credit.
+            setPendingUploads({ files });
           }
         }}
       />
@@ -689,9 +705,54 @@ function PhotosEditor({
           onPick={(index) => {
             const files = pendingReplace.files;
             setPendingReplace(null);
-            void replaceFirstUpload(files, index);
+            // The picked replacement still goes through the credit prompt.
+            setPendingUploads({ files, replaceIndex: index });
           }}
           onCancel={() => setPendingReplace(null)}
+        />
+      )}
+      {pendingUploads && (
+        <CreditModal
+          heading={
+            pendingUploads.replaceIndex !== undefined
+              ? "Credit the replacement photo"
+              : pendingUploads.files.length > 1
+                ? "Add photo credits"
+                : "Add photo credit"
+          }
+          note="This attribution ships inside the deck — it shows beneath the photo on the card and on the deck's credits page. Leave the name blank to fill it in later."
+          initial={UPLOAD_DEFAULT_CREDIT}
+          saveLabel={pendingUploads.replaceIndex !== undefined ? "Replace photo" : pendingUploads.files.length > 1 ? "Add photos" : "Add photo"}
+          onSave={(credit) => {
+            const pending = pendingUploads;
+            setPendingUploads(null);
+            if (!pending) return;
+            if (pending.replaceIndex !== undefined) {
+              void replaceFirstUpload(pending.files, pending.replaceIndex, credit);
+            } else {
+              void addUploads(pending.files, credit);
+            }
+          }}
+          onClose={() => setPendingUploads(null)}
+        />
+      )}
+      {creditSlotIndex != null && species.photos[creditSlotIndex] && (
+        <CreditModal
+          heading="Edit photo credit"
+          note="This attribution ships inside the deck — it shows beneath the photo on the card and on the deck's credits page."
+          initial={species.photos[creditSlotIndex].credit}
+          projectId={projectId}
+          fileKey={species.photos[creditSlotIndex].fileKey}
+          saveLabel="Save credit"
+          onSave={(credit) => {
+            const index = creditSlotIndex;
+            setCreditSlotIndex(null);
+            onChange((d) => {
+              const slot = d.photos[index];
+              if (slot) slot.credit = credit;
+            });
+          }}
+          onClose={() => setCreditSlotIndex(null)}
         />
       )}
       {frameSlot != null && species.photos[frameSlot]?.animation && (
