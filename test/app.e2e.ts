@@ -1,10 +1,18 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Happy path: create a deck, add species by typing names (iNat blocked),
  * open a species, export the archive. Verifies the core loop end-to-end
  * against the real dev server with the iNaturalist API stubbed.
  */
+
+/**
+ * A fresh browser session has no curator identity, so the first deck
+ * creation asks who's curating (skippable) before the page is usable.
+ */
+async function skipAuthorshipPrompt(page: Page) {
+  await page.getByTestId("author-skip").click();
+}
 
 test.beforeEach(async ({ page }) => {
   // Stub the iNat API: taxa autocomplete + taxa search return empty; photo
@@ -27,6 +35,7 @@ test("create → edit → export a deck", async ({ page }) => {
   await page.getByTestId("new-deck-description").fill("E2E description");
   await page.getByTestId("create-deck").click();
   await page.waitForURL(/\/project\/e2e-canyon/);
+  await skipAuthorshipPrompt(page);
   // Name/description editing lives on the Deck info tab.
   await page.getByTestId("tab-info").click();
   await page.waitForURL(/\/info/);
@@ -73,6 +82,7 @@ test("review screen: flag cards, filter, and jump to edit", async ({ page }) => 
   await page.getByTestId("new-deck-name").fill("Review Screen");
   await page.getByTestId("create-deck").click();
   await page.waitForURL(/\/project\/review-screen/);
+  await skipAuthorshipPrompt(page);
 
   await page.getByTestId("add-species").click();
   await page.getByRole("tab", { name: "Type or paste names" }).click();
@@ -114,6 +124,7 @@ test("location picker sets the deck location and the iNat scope", async ({ page 
   await page.getByTestId("new-deck-name").fill("Geo Deck");
   await page.getByTestId("create-deck").click();
   await page.waitForURL(/\/project\/geo-deck/);
+  await skipAuthorshipPrompt(page);
 
   await page.getByTestId("tab-info").click();
   await page.waitForURL(/\/info/);
@@ -138,6 +149,7 @@ test("map marker icon actually loads (no broken default-icon path)", async ({ pa
   await page.getByTestId("new-deck-name").fill("Marker Deck");
   await page.getByTestId("create-deck").click();
   await page.waitForURL(/\/project\//);
+  await skipAuthorshipPrompt(page);
   await page.getByTestId("tab-info").click();
   await page.waitForURL(/\/info/);
 

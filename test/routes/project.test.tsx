@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within, act, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import userEvent from "@testing-library/user-event";
 import ProjectPage from "~/routes/project";
@@ -7,6 +7,7 @@ import { listProjects, getProject } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { saveProject } from "~/lib/store";
+import { getAuthor, requestAuthorPrompt } from "~/lib/author";
 
 function renderProject(id: string) {
   return render(
@@ -212,5 +213,101 @@ describe("project route", () => {
     expect(await screen.findByTestId("tools-note")).toHaveTextContent(/set the deck's location/i);
     expect(screen.queryByTestId("tools-status")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tools-progress")).not.toBeInTheDocument();
+  });
+
+  it("asks who is curating right away for a freshly created deck", async () => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    const project = newProject("Authorship Creation");
+    project.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }));
+    await saveProject(project);
+
+    // The home page arms the prompt when a deck is created; the project page
+    // asks immediately on arrival, before any editing.
+    requestAuthorPrompt();
+    renderProject(project.id);
+    expect(await screen.findByTestId("author-modal")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("author-skip"));
+    expect(screen.queryByTestId("author-modal")).not.toBeInTheDocument();
+    expect(getAuthor()).toEqual({ name: "Deck Curator", email: "curator@localhost" });
+    window.sessionStorage.clear();
+
+    // Opening a deck without the creation signal never prompts on arrival —
+    // that path waits for the first autosave (or the Export page editor).
+    cleanup();
+    const other = newProject("Authorship Not Armed");
+    other.species.push(makeSpecies({ commonName: "Fern", category: "plants" }));
+    await saveProject(other);
+    renderProject(other.id);
+    await screen.findByTestId("species-row");
+    expect(screen.queryByTestId("author-modal")).not.toBeInTheDocument();
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  it("asks who is curating when the first autosave settles, then never again", async () => {
+    const project = newProject("Authorship Prompt");
+    project.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }));
+    await saveProject(project);
+    renderProject(project.id);
+    const row = await screen.findByTestId("species-row");
+
+    vi.useFakeTimers();
+    try {
+      // A real edit re-arms the autosave debounce; when it settles, the
+      // authorship prompt appears (the commit proceeds regardless).
+      fireEvent.change(within(row).getByLabelText("Native status of Oak"), {
+        target: { value: "native" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(12_000);
+      });
+      expect(screen.getByTestId("author-modal")).toBeInTheDocument();
+
+      // Saving stores the identity (blank fields fall back to defaults) and
+      // closes the prompt.
+      fireEvent.change(screen.getByTestId("author-name"), { target: { value: "Ada Lovelace" } });
+      fireEvent.click(screen.getByTestId("author-save"));
+      expect(screen.queryByTestId("author-modal")).not.toBeInTheDocument();
+      expect(getAuthor()).toEqual({ name: "Ada Lovelace", email: "curator@localhost" });
+
+      // A later edit and autosave never asks again.
+      fireEvent.change(screen.getByLabelText("Native status of Oak"), {
+        target: { value: "non-native" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(12_000);
+      });
+      expect(screen.queryByTestId("author-modal")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    }
+  });
+
+  it("skipping the authorship prompt keeps the default author in force", async () => {
+    const project = newProject("Authorship Skip");
+    project.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }));
+    await saveProject(project);
+    renderProject(project.id);
+    const row = await screen.findByTestId("species-row");
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(within(row).getByLabelText("Native status of Oak"), {
+        target: { value: "native" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(12_000);
+      });
+      fireEvent.click(screen.getByTestId("author-skip"));
+      expect(screen.queryByTestId("author-modal")).not.toBeInTheDocument();
+      expect(getAuthor()).toEqual({ name: "Deck Curator", email: "curator@localhost" });
+    } finally {
+      vi.useRealTimers();
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    }
   });
 });

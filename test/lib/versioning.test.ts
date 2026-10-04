@@ -3,6 +3,7 @@ import git from "isomorphic-git";
 import FS from "@isomorphic-git/lightning-fs";
 import { unzipSync } from "fflate";
 import { commitDeckVersion, ensureRepo, listVersions, restoreVersion } from "~/lib/versioning";
+import { saveAuthor } from "~/lib/author";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { saveProject, putFile, getFile } from "~/lib/store";
@@ -118,5 +119,30 @@ describe("git versioning", () => {
     const fs = new FS("deck-curator-git");
     const log = await git.log({ fs, dir: `/${project.id}`, depth: 10 });
     expect(log[0].commit.message.trim()).toBe("probe commit");
+  }, 60000);
+
+  it("stamps commits with the curator identity, defaulting when none is set", async () => {
+    try {
+      const project = sample();
+      await saveProject(project);
+      await ensureRepo(project);
+
+      saveAuthor({ name: "Ada Lovelace", email: "ada@example.com" });
+      await commitDeckVersion(project, undefined, "authored probe");
+      const authored = (await listVersions(project.id))[0];
+      expect(authored.message).toBe("authored probe");
+      expect(authored.authorName).toBe("Ada Lovelace");
+      expect(authored.authorEmail).toBe("ada@example.com");
+
+      // No identity → the default author fills in no matter what.
+      window.localStorage.removeItem("deck-curator.author.v1");
+      await commitDeckVersion(project, undefined, "default author probe");
+      const defaulted = (await listVersions(project.id))[0];
+      expect(defaulted.message).toBe("default author probe");
+      expect(defaulted.authorName).toBe("Deck Curator");
+      expect(defaulted.authorEmail).toBe("curator@localhost");
+    } finally {
+      window.localStorage.clear();
+    }
   }, 60000);
 });

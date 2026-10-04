@@ -2,11 +2,13 @@ import type { Route } from "./+types/project";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { AddSpeciesModal } from "~/components/AddSpeciesModal";
+import { AuthorPromptModal } from "~/components/AuthorPromptModal";
 import { ToolsMenu } from "~/components/ToolsMenu";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
 import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
+import { authorPromptPending, consumeAuthorPromptRequest, markAuthorAsked } from "~/lib/author";
 import { allTags } from "~/components/TagsManager";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -20,6 +22,19 @@ export default function ProjectPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // Authorship prompt: shown once per browser, when the first autosave fires
+  // after a real edit. Purely opt-in — the commit always proceeds, and a
+  // default author fills in when this is skipped (see lib/author).
+  const [showAuthorPrompt, setShowAuthorPrompt] = useState(false);
+  const everEditedRef = useRef(false);
+  const handleUpdate = useCallback(
+    (f: (d: Project) => void) => {
+      everEditedRef.current = true;
+      update(f);
+    },
+    [update],
+  );
+
   // Make sure the git history exists from the moment a project opens —
   // once per project id, not on every edit.
   const repoInitRef = useRef<string | null>(null);
@@ -29,12 +44,24 @@ export default function ProjectPage() {
     void ensureRepo(project).catch(() => undefined);
   }, [project]);
 
+  // A freshly created deck (the home page armed this) asks who's curating
+  // right away, before any editing happens — once per opened deck.
+  const creationPromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!project || creationPromptRef.current === project.id) return;
+    creationPromptRef.current = project.id;
+    if (consumeAuthorPromptRequest() && authorPromptPending()) setShowAuthorPrompt(true);
+  }, [project]);
+
   // Auto-version: commit the deck to its git history shortly after the last
-  // change settles. Failures are swallowed inside commitDeckVersion.
+  // change settles. Failures are swallowed inside commitDeckVersion. This is
+  // also the fallback moment to ask (for this session) who to stamp onto
+  // versions — for decks opened without going through deck creation.
   useEffect(() => {
     if (!project) return;
     const handle = setTimeout(() => {
       void commitDeckVersion(project);
+      if (everEditedRef.current && authorPromptPending()) setShowAuthorPrompt(true);
     }, 12_000);
     return () => clearTimeout(handle);
   }, [project]);
@@ -102,14 +129,22 @@ export default function ProjectPage() {
         onSelectAll={setSelected}
         onAdd={() => setShowAdd(true)}
         onEdit={(id) => navigate(`/project/${project.id}/species/${id}`)}
-        onChange={update}
+        onChange={handleUpdate}
         onDownloadTemplate={() => void downloadTemplate()}
       />
       {showAdd && (
         <AddSpeciesModal
           project={project}
-          onChange={update}
+          onChange={handleUpdate}
           onClose={() => setShowAdd(false)}
+        />
+      )}
+      {showAuthorPrompt && (
+        <AuthorPromptModal
+          onClose={() => {
+            markAuthorAsked();
+            setShowAuthorPrompt(false);
+          }}
         />
       )}
     </main>

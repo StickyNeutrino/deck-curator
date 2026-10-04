@@ -3,6 +3,7 @@ import { migrateProject, referencedFileKeys } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
 import { getFile, restoreSnapshot } from "./store";
+import { getAuthor } from "./author";
 import "./polyfills";
 
 /**
@@ -19,7 +20,6 @@ import "./polyfills";
  * block editing or exporting.
  */
 
-const AUTHOR = { name: "Deck Curator", email: "curator@localhost" };
 const PROJECT_FILE = "project.deckcurator.json";
 const MANIFEST_FILE = "manifest.json";
 
@@ -300,7 +300,9 @@ async function commitAll(
     }
   }
 
-  const oid = await git.commit({ fs, dir, message, author: AUTHOR });
+  // Authorship is read at commit time — a saved curator identity (or the
+  // default, see lib/author) stamps every version as it lands.
+  const oid = await git.commit({ fs, dir, message, author: getAuthor() });
   lastFingerprints.set(project.id, fingerprint(project));
   return oid;
 }
@@ -309,6 +311,10 @@ export interface VersionInfo {
   oid: string;
   message: string;
   timestamp: number;
+  /** Commit authorship — the curator identity stamped when the version
+   *  landed (see lib/author). Optional so plain version lists stay valid. */
+  authorName?: string;
+  authorEmail?: string;
 }
 
 /** Commit history, newest first. */
@@ -318,10 +324,12 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
     const git = await getGit();
     const dir = dirFor(projectId);
     const log = await git.log({ fs, dir, depth });
-    return log.map((entry: { oid: string; commit: { message: string; author: { timestamp: number } } }) => ({
+    return log.map((entry: { oid: string; commit: { message: string; author: { name: string; email: string; timestamp: number } } }) => ({
       oid: entry.oid,
       message: entry.commit.message.trim(),
       timestamp: entry.commit.author.timestamp * 1000,
+      authorName: entry.commit.author.name,
+      authorEmail: entry.commit.author.email,
     }));
   } catch (err) {
     // A repo with no commits yet is normal (fresh init, first commit in

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 import { listProjects, saveProject, type ProjectSummary } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { uniqueId } from "~/lib/ids";
+import { authorPromptPending, requestAuthorPrompt } from "~/lib/author";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -44,6 +45,9 @@ export default function Home() {
       // overwriting an existing deck.
       project.id = uniqueId(project.id, (await listProjects()).map((p) => p.id));
       await saveProject(project);
+      // New-deck moment: with the curator's identity still unset, have the
+      // project page ask who's curating right away (see lib/author).
+      if (authorPromptPending()) requestAuthorPrompt();
       navigate(`/project/${project.id}`);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));

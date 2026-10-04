@@ -7,6 +7,8 @@ import { exportProjectFile, exportDeckFile, exportLightDeck } from "~/lib/export
 import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
 import { ensureRepo, isAutosaveCommit, listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
+import { getAuthor } from "~/lib/author";
+import { AuthorPromptModal } from "~/components/AuthorPromptModal";
 import { startJob, registerJobDownload } from "~/lib/jobs";
 import { openJobsPanel } from "~/components/JobsDock";
 import { ProjectTabs } from "~/components/ProjectTabs";
@@ -313,6 +315,10 @@ function VersionHistory({
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [hideAutosaves, setHideAutosaves] = useState(false);
+  // The authorship every new version is stamped with — editable right here,
+  // since this is where the stamped history is visible.
+  const [author, setAuthor] = useState(() => getAuthor());
+  const [showAuthorEditor, setShowAuthorEditor] = useState(false);
 
   // The filter is display-only: autosave commits stay in the repository and
   // remain restorable — they just leave the visible list when hidden.
@@ -396,7 +402,18 @@ function VersionHistory({
       <h2 className="font-semibold mb-1">Version history</h2>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
         Every deck is its own git repository in your browser. Changes commit automatically as you
-        work (a few seconds after you stop typing); save a named version before big changes.
+        work (a few seconds after you stop typing); save a named version before big changes. New
+        versions are authored as{" "}
+        <button
+          type="button"
+          className="underline"
+          onClick={() => setShowAuthorEditor(true)}
+          data-testid="version-author"
+          title="Change the name and email stamped onto versions"
+        >
+          {author.name} &lt;{author.email}&gt;
+        </button>
+        .
       </p>
       <div className="flex gap-2 mb-3">
         <input
@@ -461,6 +478,16 @@ function VersionHistory({
               <span className="flex-1 truncate" title={v.message}>
                 {v.message.split("\n")[0]}
               </span>
+              {v.authorName && (
+                <span
+                  className="text-xs whitespace-nowrap truncate max-w-[10rem]"
+                  style={{ color: "var(--muted)" }}
+                  title={v.authorEmail ? `${v.authorName} <${v.authorEmail}>` : v.authorName}
+                  data-testid={`version-author-${v.oid.slice(0, 8)}`}
+                >
+                  {v.authorName}
+                </span>
+              )}
               <span className="text-xs whitespace-nowrap" style={{ color: "var(--muted)" }}>
                 {new Date(v.timestamp).toLocaleString()}
               </span>
@@ -475,6 +502,16 @@ function VersionHistory({
             </li>
           ))}
         </ul>
+      )}
+      {showAuthorEditor && (
+        <AuthorPromptModal
+          heading="Version authorship"
+          skippable={false}
+          onClose={() => {
+            setShowAuthorEditor(false);
+            setAuthor(getAuthor());
+          }}
+        />
       )}
     </section>
   );
