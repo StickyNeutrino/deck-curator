@@ -37,6 +37,7 @@ test("create → edit → export a deck", async ({ page }) => {
 
   // Add species via the list tab.
   await page.getByTestId("add-species").click();
+  await page.getByRole("tab", { name: "Type or paste names" }).click();
   await page.getByTestId("name-list").fill("Quercus agrifolia\nDudleya edulis");
   await page.getByRole("checkbox", { name: /look up on inaturalist/i }).uncheck();
   await page.getByTestId("add-list").click();
@@ -69,6 +70,7 @@ test("review screen: flag cards, filter, and jump to edit", async ({ page }) => 
   await page.waitForURL(/\/project\/review-screen/);
 
   await page.getByTestId("add-species").click();
+  await page.getByRole("tab", { name: "Type or paste names" }).click();
   await page.getByTestId("name-list").fill("Quercus agrifolia\nDudleya edulis");
   await page.getByRole("checkbox", { name: /look up on inaturalist/i }).uncheck();
   await page.getByTestId("add-list").click();
@@ -168,6 +170,7 @@ test("version history: auto-commits once per change and lists versions", async (
   // commit per keystroke, and nothing extra while idle).
   await page.getByTestId("tab-cards").click();
   await page.getByTestId("add-species").click();
+  await page.getByRole("tab", { name: "Type or paste names" }).click();
   await page.getByTestId("name-list").fill("Quercus agrifolia");
   await page.getByRole("checkbox", { name: /look up on inaturalist/i }).uncheck();
   await page.getByTestId("add-list").click();

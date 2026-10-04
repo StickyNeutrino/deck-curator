@@ -18,6 +18,8 @@ export interface AcquireOptions {
   /** Whether animated media (GIF/video) may be used; static photos pass regardless. */
   includeAnimated: boolean;
   projectId: string;
+  /** Abort signal from a cancellable background job, when there is one. */
+  signal?: AbortSignal;
 }
 
 /** Download + classify + store one candidate. Returns null when the candidate
@@ -29,7 +31,7 @@ export async function acquireMediaSlot(
 ): Promise<PhotoSlot | null> {
   let blob: Blob;
   try {
-    blob = await downloadPhoto(photo);
+    blob = await downloadPhoto(photo, opts.signal);
   } catch {
     return null;
   }

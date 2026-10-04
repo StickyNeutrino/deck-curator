@@ -45,12 +45,27 @@ describe("project route", () => {
     expect(screen.queryByTestId("deck-label")).not.toBeInTheDocument();
   });
 
+  it("opens on the iNaturalist tab, with list/file one click away", async () => {
+    const user = userEvent.setup();
+    const project = await makeFixtureProject();
+    renderProject(project.id);
+
+    await user.click(await screen.findByTestId("add-species"));
+    const dialog = screen.getByTestId("add-species-modal");
+    const tabs = Array.from(dialog.querySelectorAll("[role='tab']"));
+    // iNat search leads and starts active.
+    expect(tabs.map((t) => t.textContent)).toEqual(["iNaturalist search", "Type or paste names", "Spreadsheet"]);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("inat-tab")).toBeInTheDocument();
+  });
+
   it("adds species from the typed-list tab (no iNat)", async () => {
     const user = userEvent.setup();
     const project = await makeFixtureProject();
     renderProject(project.id);
 
     await user.click(await screen.findByTestId("add-species"));
+    await user.click(screen.getByRole("tab", { name: "Type or paste names" }));
     await user.type(screen.getByTestId("name-list"), "Quercus agrifolia\nDudleya edulis");
     // Uncheck the iNat enrichment so the test needs no network.
     await user.click(screen.getByRole("checkbox", { name: /look up on inaturalist/i }));
@@ -176,7 +191,7 @@ describe("project route", () => {
     expect(screen.getByTestId("clear-selection")).toHaveTextContent("1 selected");
   });
 
-  it("opens the tools menu and reports a missing deck location for place-based tools", async () => {
+  it("opens the tools menu and reports a missing deck location in the menu", async () => {
     const user = userEvent.setup();
     const project = newProject("Tools");
     project.species.push(makeSpecies({ commonName: "Oak", category: "plants" }));
@@ -190,8 +205,12 @@ describe("project route", () => {
     expect(within(menu).getByTestId("tool-native")).toHaveTextContent("Label native / introduced");
     expect(within(menu).getByTestId("tool-rarity")).toHaveTextContent("Label conservation status");
 
-    // No deck location → the place-based tools can't run; they say so.
+    // No deck location → the place-based tools can't run; the menu says so
+    // (nothing is reported under the Tools button any more — that moved to
+    // the Jobs dock).
     await user.click(within(menu).getByTestId("tool-native"));
-    expect(await screen.findByTestId("tools-status")).toHaveTextContent(/set the deck's location/i);
+    expect(await screen.findByTestId("tools-note")).toHaveTextContent(/set the deck's location/i);
+    expect(screen.queryByTestId("tools-status")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tools-progress")).not.toBeInTheDocument();
   });
 });

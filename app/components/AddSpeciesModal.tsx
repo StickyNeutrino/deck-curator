@@ -5,11 +5,13 @@ import { FileTab } from "~/components/FileTab";
 import type { Project } from "~/lib/types";
 
 /**
- * The three ways species enter a deck: a typed/pasted name list, an
- * iNaturalist location search, or a spreadsheet (template or survey-style).
+ * The ways species enter a deck. The iNaturalist search leads — it's the
+ * most powerful path (location + kind + native-status filters, thumbnails,
+ * checkbox selection) and the default tab; typed/pasted names and the
+ * spreadsheet are one click away.
  */
 
-export type Tab = "list" | "inat" | "file";
+export type Tab = "inat" | "list" | "file";
 
 export function AddSpeciesModal({
   project,
@@ -20,7 +22,7 @@ export function AddSpeciesModal({
   onChange: (f: (d: Project) => void) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("list");
+  const [tab, setTab] = useState<Tab>("inat");
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -48,8 +50,8 @@ export function AddSpeciesModal({
         <div className="flex gap-2 mb-5" role="tablist">
           {(
             [
-              ["list", "Type or paste names"],
               ["inat", "iNaturalist search"],
+              ["list", "Type or paste names"],
               ["file", "Spreadsheet"],
             ] as Array<[Tab, string]>
           ).map(([id, label]) => (
@@ -64,8 +66,8 @@ export function AddSpeciesModal({
             </button>
           ))}
         </div>
-        {tab === "list" && <ListTab project={project} onChange={onChange} />}
         {tab === "inat" && <InatTab project={project} onChange={onChange} />}
+        {tab === "list" && <ListTab project={project} onChange={onChange} />}
         {tab === "file" && <FileTab onChange={onChange} />}
       </div>
     </div>

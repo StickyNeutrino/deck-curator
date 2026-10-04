@@ -159,7 +159,8 @@ export function looksLikeSciName(text: string): boolean {
 /** Candidate media for a taxon, CC-licensed, most-voted first.
  *  `excludePhotoIds` (raw iNat photo ids) filters out media already used by
  *  other cards of the same species, so variant cards show different images.
- *  Video media is skipped unless `includeVideos` is set. */
+ *  Video media is skipped unless `includeVideos` is set. `signal` cancels
+ *  the API request (background jobs pass their abort signal through). */
 export async function candidatePhotos(
   taxonId: number,
   scope?: { lat: number; lng: number; radiusKm: number } | { placeId: number },
@@ -168,9 +169,10 @@ export async function candidatePhotos(
     includeVideos?: boolean;
     /** Deck search settings: licenses, research grade, ordering. */
     settings?: InatSearchSettings;
+    signal?: AbortSignal;
   } = {},
 ): Promise<PhotoCandidate[]> {
-  const { includeVideos = false, settings } = options;
+  const { includeVideos = false, settings, signal } = options;
   const licenses = settings?.licenses;
   const results = await observations({
     taxonId,
@@ -186,7 +188,7 @@ export async function candidatePhotos(
       licenses && licenses.length < INAT_ALLOWED_LICENSES.length
         ? licenses.join(",")
         : undefined,
-  });
+  }, signal);
   const out: PhotoCandidate[] = [];
   const seen = new Set<string>();
   for (const obs of results) {
@@ -222,12 +224,14 @@ export async function candidatePhotos(
     .map(({ c }) => c);
 }
 
-/** Download an iNat photo (original, then large/medium) as a Blob. */
-export async function downloadPhoto(photo: InatPhoto): Promise<Blob> {
+/** Download an iNat photo (original, then large/medium) as a Blob. The
+ *  optional signal cancels the download (background job cancellation). */
+export async function downloadPhoto(photo: InatPhoto, signal?: AbortSignal): Promise<Blob> {
   let lastErr: unknown;
   for (const url of photoVariants(photo)) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal });
       if (!res.ok) continue;
       const buf = await res.arrayBuffer();
       if (buf.byteLength < 5000) continue;

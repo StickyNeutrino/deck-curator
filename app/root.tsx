@@ -8,6 +8,7 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
+import { JobsDock } from "~/components/JobsDock";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/400-italic.css";
 import "@fontsource/inter/500.css";
@@ -49,7 +50,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  return (
+    <>
+      <Outlet />
+      {/* Global background-job monitor: bulk iNat adds and deck tools are
+          visible (and cancellable) from every page. */}
+      <JobsDock />
+    </>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

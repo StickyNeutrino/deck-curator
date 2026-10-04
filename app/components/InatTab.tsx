@@ -4,12 +4,11 @@ import type { Project, SpeciesEntry, NativeStatus } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
 import { candidatePhotos, pickDistinct, fetchTaxonDetail } from "~/lib/resolve";
 import { acquireMediaSlot } from "~/lib/media";
-import { isVideoMedia, taxaStatuses } from "~/lib/inat";
+import { taxaStatuses, photoSquareUrl, inatGet, type InatTaxon } from "~/lib/inat";
 import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
-import { inatGet, type InatTaxon } from "~/lib/inat";
 import { resolveInatPlace, establishmentToNative } from "~/lib/tools";
+import { startJob, useJobs } from "~/lib/jobs";
 import { slugify } from "~/lib/ids";
-import { putFile } from "~/lib/store";
 import { LocationPicker } from "~/components/LocationPicker";
 import type { DeckLocation } from "~/lib/types";
 import { searchSettingsOf } from "~/lib/types";
@@ -34,13 +33,33 @@ function taxonIconicName(t: InatTaxon): string {
   return (iconicId !== undefined && ICONIC_TAXON_NAMES[iconicId]) || (t as unknown as { iconic_taxon_name?: string }).iconic_taxon_name || "";
 }
 
+/** The "kind" filter: iNat's iconic taxa. `name` is what the observations
+ *  endpoint accepts for its `iconic_taxa` param (best-effort server-side
+ *  narrowing); `id` drives the authoritative client-side filter. */
+const KINDS: Array<{ id: number; name: string; label: string }> = [
+  { id: 47126, name: "Plantae", label: "Plants" },
+  { id: 47170, name: "Fungi", label: "Fungi" },
+  { id: 3, name: "Aves", label: "Birds" },
+  { id: 40151, name: "Mammalia", label: "Mammals" },
+  { id: 26036, name: "Reptilia", label: "Reptiles" },
+  { id: 20978, name: "Amphibia", label: "Amphibians" },
+  { id: 47178, name: "Actinopterygii", label: "Fish" },
+  { id: 47158, name: "Insecta", label: "Insects" },
+  { id: 47119, name: "Arachnida", label: "Arachnids" },
+];
+
+type EstablishmentFilter = "any" | "native" | "non-native";
+
 /**
- * Tab 2: iNaturalist search. A lat/lng radius (or worldwide) + optional taxon
- * filter lists the top species observed in the area (cap adjustable up to
- * 200); "Add all" bulk-adds them with a progress bar, and "cards per species"
- * creates N photo-distinct cards per species for anti-memorization variants.
- * Species are filed into Plants/Fungi/Animals automatically from iNat's
- * taxonomy, and family/scientific details are enriched from the same API.
+ * The iNaturalist search tab. A location (or worldwide scope) + a kind,
+ * native-status, and name filter lists the top species observed in the area;
+ * the curator ticks checkboxes and "Add selected" spawns a cancellable
+ * background job that fetches CC photos for each card — the job keeps
+ * running (and stays monitorable in the Jobs dock) even after this modal
+ * closes. "Cards per species" creates N photo-distinct cards per species for
+ * anti-memorization variants. Species are filed into Plants/Fungi/Animals
+ * automatically from iNat's taxonomy, and family/scientific details are
+ * enriched from the same API.
  */
 
 interface TaxonResult {
@@ -49,6 +68,8 @@ interface TaxonResult {
   common: string | null;
   count: number;
   iconicTaxonId: number | null;
+  /** Square thumbnail from iNat's default photo, when the taxon has one. */
+  thumb?: string;
   /** iNat place-checklist label (native / non-native), when the search
    *  location resolved to an iNat place. Best-effort — may stay null. */
   native: NativeStatus | null;
@@ -78,9 +99,12 @@ export function InatTab({
   // Scope: a geocoded/picked location (initialized from the deck's own
   // location when it has one) or worldwide when unset.
   const [loc, setLoc] = useState<DeckLocation | undefined>(project.location);
-  const [taxonQuery, setTaxonQuery] = useState("");
+  const [nameQuery, setNameQuery] = useState("");
+  const [kind, setKind] = useState(0); // 0 = any kind
+  const [establishment, setEstablishment] = useState<EstablishmentFilter>("any");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<TaxonResult[]>([]);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [photosPerCard, setPhotosPerCard] = useState(3);
@@ -90,7 +114,13 @@ export function InatTab({
   const [resultLimit, setResultLimit] = useState<number>(30);
   const [cardsPerSpecies, setCardsPerSpecies] = useState(1);
   const [busyName, setBusyName] = useState<string | null>(null);
-  const [bulk, setBulk] = useState<{ done: number; total: number; label: string } | null>(null);
+
+  // Live job list: a running bulk-add for this deck disables further adds
+  // (the job itself is watched — and cancellable — in the Jobs dock).
+  const jobs = useJobs();
+  const bulkRunning = jobs.some(
+    (j) => j.kind === "inat-add" && j.projectId === project.id && j.status === "running",
+  );
 
   /** Existing cards per taxon — drives the "in deck" badges and "+ Another". */
   const existing = useMemo(() => {
@@ -119,8 +149,13 @@ export function InatTab({
   );
 
   const search = useCallback(async () => {
-    if (!taxonQuery.trim() && !(loc?.lat != null && loc?.lng != null)) {
-      setError("Enter coordinates (and/or a taxon filter) to search.");
+    const hasCoords = loc?.lat != null && loc?.lng != null;
+    if (!nameQuery.trim() && kind === 0 && !hasCoords) {
+      setError("Enter a location (and/or a kind or name filter) to search.");
+      return;
+    }
+    if (establishment !== "any" && !hasCoords) {
+      setError("Filtering by native status needs a search location — pick one above.");
       return;
     }
     setSearching(true);
@@ -128,29 +163,33 @@ export function InatTab({
     setStatus("Searching iNaturalist…");
     try {
       // iNat's taxa endpoint can't filter geographically, so aggregate taxa
-      // from observations inside the circle. per_page goes up to 200; a second
-      // page is fetched when the species cap needs more observations to reach.
+      // from observations inside the circle. per_page goes up to 200; more
+      // pages are fetched when the species cap needs more observations.
       const want = resultLimit;
       const counts = new Map<number, { taxon: InatTaxon; count: number }>();
-      const needle = taxonQuery.trim().toLowerCase();
+      const needle = nameQuery.trim().toLowerCase();
+      const kindDef = kind ? KINDS.find((k) => k.id === kind) : undefined;
       const maxPages = Math.ceil(want / 40) + 1; // ~40-60 species per 100 observations typically
       for (let page = 1; page <= Math.min(4, maxPages); page++) {
         const json = await inatGet<{
           results: Array<{ taxon?: InatTaxon; id: number }>;
         }>("observations", {
-          lat: loc?.lat != null && loc?.lng != null ? loc.lat : undefined,
-          lng: loc?.lat != null && loc?.lng != null ? loc.lng : undefined,
-          radius: loc?.lat != null && loc?.lng != null ? loc.radiusKm || 10 : undefined,
+          lat: hasCoords ? loc!.lat : undefined,
+          lng: hasCoords ? loc!.lng : undefined,
+          radius: hasCoords ? loc!.radiusKm || 10 : undefined,
           per_page: 200,
           page,
           photos: true,
           quality_grade: searchSettings.researchGrade ? "research" : undefined,
           order_by: "observed_on",
+          // Best-effort server-side narrowing; the client-side check below
+          // is authoritative (the param may be ignored by the API).
+          iconic_taxa: kindDef?.name,
         });
         for (const obs of json.results) {
           const t = obs.taxon;
           if (!t || !t.is_active || t.rank !== "species") continue;
-          const needle = taxonQuery.trim().toLowerCase();
+          if (kindDef && t.iconic_taxon_id !== kindDef.id) continue;
           if (
             needle &&
             !t.name.toLowerCase().includes(needle) &&
@@ -174,14 +213,15 @@ export function InatTab({
           common: taxon.preferred_common_name ?? null,
           count,
           iconicTaxonId: taxon.iconic_taxon_id ?? null,
+          thumb: photoSquareUrl(taxon.default_photo),
           native: null as NativeStatus | null,
           nativeSource: undefined as string | undefined,
         }));
       // Best-effort pre-labeling: iNat's place checklist says which species
       // are native / introduced in the search area (one cached batch call —
       // and the labels ride along on cards added from the results).
-      if (loc?.lat != null && loc?.lng != null && found.length) {
-        const place = await resolveInatPlace(loc);
+      if (hasCoords && found.length) {
+        const place = await resolveInatPlace(loc!);
         if (place) {
           const rows = await taxaStatuses(found.map((r) => r.id), place.id);
           for (const r of found) {
@@ -193,11 +233,30 @@ export function InatTab({
           }
         }
       }
-      setResults(found);
+      // Native-status filter: keep only species iNat labels as requested.
+      let filtered = found;
+      let filterNote: string | null = null;
+      if (establishment !== "any") {
+        let unlabeled = 0;
+        filtered = found.filter((r) => {
+          if (!r.native) {
+            unlabeled++;
+            return false;
+          }
+          return r.native === establishment;
+        });
+        if (unlabeled > 0 && filtered.length) {
+          filterNote = `Found ${found.length} species — ${unlabeled} had no native-status data and are hidden.`;
+        }
+      }
+      setResults(filtered);
+      // Default selection: everything not already in the deck.
+      setSelected(new Set(filtered.filter((r) => !cardsFor(r).length).map((r) => r.id)));
       setStatus(
-        found.length
-          ? `Found ${found.length} species observed in the area — add them individually or all at once.`
-          : "No species matched. Try a broader taxon filter or a bigger radius.",
+        filterNote ??
+          (filtered.length
+            ? `Found ${filtered.length} species observed in the area — tick the ones to add, then “Add selected”.`
+            : "No species matched. Try a broader filter or a bigger radius."),
       );
     } catch (err) {
       setStatus(null);
@@ -205,18 +264,19 @@ export function InatTab({
     } finally {
       setSearching(false);
     }
-  }, [loc, taxonQuery, resultLimit, searchSettings]);
+  }, [loc, nameQuery, kind, establishment, resultLimit, searchSettings, cardsFor]);
 
   /**
    * Add one search result as a card. When the species is already in the deck
    * this creates an extra card ("variant"); `exclude` keeps its photos
    * distinct from the cards already in the deck. Family/scientific details
    * are enriched from the taxon detail API (cached), and the species is
-   * filed into Plants/Fungi/Animals from iNat's taxonomy.
+   * filed into Plants/Fungi/Animals from iNat's taxonomy. `signal` aborts
+   * in-flight fetches when a background job is cancelled.
    */
   const addResult = useCallback(
-    async (result: TaxonResult, opts: { quiet?: boolean; exclude?: Set<string>; category?: string } = {}): Promise<SpeciesEntry | null> => {
-      setBusyName(result.name);
+    async (result: TaxonResult, opts: { quiet?: boolean; exclude?: Set<string>; category?: string; signal?: AbortSignal } = {}): Promise<SpeciesEntry | null> => {
+      if (!opts.quiet) setBusyName(result.name);
       try {
         const photoScope =
           loc?.lat != null && loc?.lng != null
@@ -225,7 +285,10 @@ export function InatTab({
         const candidates = await candidatePhotos(result.id, photoScope, opts.exclude, {
           includeVideos: searchSettings.includeMedia,
           settings: searchSettings,
+          signal: opts.signal,
         });
+        // Cancelled while fetching: don't build a half-photo card.
+        if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const picked = pickDistinct(candidates, photosPerCard);
         const existingCards = cardsFor(result);
 
@@ -261,6 +324,7 @@ export function InatTab({
         });
         const base = slugify(result.name);
         for (let i = 0; i < picked.length; i++) {
+          if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
           const pick = picked[i];
           try {
             const slot = await acquireMediaSlot(pick.photo, pick.obs, {
@@ -268,11 +332,15 @@ export function InatTab({
               base,
               includeAnimated: searchSettings.includeMedia,
               projectId: project.id,
+              signal: opts.signal,
             });
             if (slot) entry.photos.push(slot);
           } catch {
             // A failed download just means fewer photos on the card.
           }
+          // Cancelled mid-download: abandon the card entirely rather than
+          // land a photo-less one (this throw escapes the per-photo catch).
+          if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         }
         onChange((d) => {
           if (!d.categories.some((c) => c.id === entry.category)) {
@@ -294,56 +362,83 @@ export function InatTab({
         }
         return null;
       } finally {
-        setBusyName(null);
+        if (!opts.quiet) setBusyName(null);
       }
     },
     [loc, photosPerCard, searchSettings, project.id, project.categories, cardsFor, onChange],
   );
 
-  /** Add every listed species (cardsPerSpecies cards each, photo-distinct). */
-  const addAll = useCallback(async () => {
-    const fresh = results.filter((r) => cardsFor(r).length === 0);
-    if (!fresh.length) {
-      setStatus("Every species in this search is already in the deck.");
-      return;
-    }
-    const total = fresh.length * cardsPerSpecies;
-    setBulk({ done: 0, total, label: "" });
+  /**
+   * Spawn a background job that adds every checked species (cardsPerSpecies
+   * cards each, photo-distinct). The job keeps running when this modal
+   * closes; progress and cancellation live in the Jobs dock.
+   */
+  const addSelected = useCallback(() => {
+    const chosen = results.filter((r) => selected.has(r.id));
+    if (!chosen.length) return;
+    const total = chosen.length * cardsPerSpecies;
     // Track photo usage locally: the loop's project prop is a snapshot, so
     // exclusions for species added earlier in this run are kept here.
     const usedByTaxon = new Map<number, Set<string>>();
     for (const r of results) {
       usedByTaxon.set(r.id, photoIdsInDeck(cardsFor(r)));
     }
-    let added = 0;
-    let failed = 0;
-    let done = 0;
-    for (const r of fresh) {
-      const used = usedByTaxon.get(r.id)!;
-      for (let c = 0; c < cardsPerSpecies; c++) {
-        done++;
-        setBulk({ done: done - 1, total, label: `${r.common ?? r.name}${cardsPerSpecies > 1 ? ` (card ${c + 1}/${cardsPerSpecies})` : ""}` });
-        setStatus(`Adding ${done}/${total}: ${r.common ?? r.name}…`);
-        const entry = await addResult(r, { quiet: true, exclude: used });
-        if (entry) {
-          added++;
-          for (const p of entry.photos) {
-            if (p.id.startsWith("inat:")) used.add(p.id.slice(5));
+    void startJob(
+      {
+        kind: "inat-add",
+        label: `Adding ${total} card${total === 1 ? "" : "s"} from iNaturalist`,
+        projectId: project.id,
+        projectName: project.name,
+      },
+      async (h) => {
+        let added = 0;
+        let failed = 0;
+        let done = 0;
+        for (const r of chosen) {
+          const used = usedByTaxon.get(r.id)!;
+          for (let c = 0; c < cardsPerSpecies; c++) {
+            if (h.signal.aborted) throw new DOMException("Aborted", "AbortError");
+            h.progress(done, total, `${r.common ?? r.name}${cardsPerSpecies > 1 ? ` — card ${c + 1}/${cardsPerSpecies}` : ""}`);
+            const entry = await addResult(r, { quiet: true, exclude: used, signal: h.signal });
+            // Cancelled mid-item: don't count the half-done species.
+            if (h.signal.aborted) throw new DOMException("Aborted", "AbortError");
+            done++;
+            h.progress(done, total, r.common ?? r.name);
+            if (entry) {
+              added++;
+              for (const p of entry.photos) {
+                if (p.id.startsWith("inat:")) used.add(p.id.slice(5));
+              }
+            } else {
+              failed++;
+            }
           }
-        } else {
-          failed++;
         }
-      }
-    }
-    setBulk(null);
-    setStatus(
-      `Added ${added} of ${total} cards${failed ? ` (${failed} failed)` : ""}.` +
-        (cardsPerSpecies > 1 ? " Extra cards export as “Name (2)”, “Name (3)”… with different photos." : ""),
+        return (
+          `Added ${added} of ${total} card${total === 1 ? "" : "s"}${failed ? ` — ${failed} failed` : ""}.` +
+          (cardsPerSpecies > 1 ? " Extras export as “Name (2)”, “Name (3)”… with different photos." : "")
+        );
+      },
     );
-    if (failed) console.warn(`${failed} iNat adds failed during Add all`);
-  }, [results, cardsFor, addResult, cardsPerSpecies]);
+    setSelected(new Set());
+    setStatus(
+      `Adding ${total} card${total === 1 ? "" : "s"} in the background — watch (and cancel) it in Jobs.`,
+    );
+  }, [results, selected, cardsPerSpecies, cardsFor, addResult, project.id, project.name]);
 
-  const freshCount = results.filter((r) => cardsFor(r).length === 0).length;
+  const toggleSelected = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = results.length > 0 && results.every((r) => selected.has(r.id));
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(results.map((r) => r.id)));
+  };
 
   return (
     <div data-testid="inat-tab">
@@ -364,14 +459,43 @@ export function InatTab({
           showRadius
         />
       </div>
-      <div className="grid grid-cols-2 gap-3 mb-3">
+      <div className="grid grid-cols-3 gap-3 mb-3">
         <label className="text-sm">
-          <span className="label">Taxon filter (optional)</span>
+          <span className="label">Kind</span>
+          <select
+            className="field !py-1"
+            value={kind}
+            onChange={(e) => setKind(Number(e.target.value))}
+            data-testid="inat-kind"
+            title="Limit the search to one group of organisms"
+          >
+            <option value={0}>Any kind</option>
+            {KINDS.map((k) => (
+              <option key={k.id} value={k.id}>{k.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          <span className="label">Native status</span>
+          <select
+            className="field !py-1"
+            value={establishment}
+            onChange={(e) => setEstablishment(e.target.value as EstablishmentFilter)}
+            data-testid="inat-establishment"
+            title="Filter by iNat's place checklist — needs a search location"
+          >
+            <option value="any">Native &amp; non-native</option>
+            <option value="native">Native only</option>
+            <option value="non-native">Non-native only</option>
+          </select>
+        </label>
+        <label className="text-sm">
+          <span className="label">Name contains (optional)</span>
           <input
-            className="field"
-            value={taxonQuery}
-            onChange={(e) => setTaxonQuery(e.target.value)}
-            placeholder="plants, birds, Dudleya…"
+            className="field !py-1"
+            value={nameQuery}
+            onChange={(e) => setNameQuery(e.target.value)}
+            placeholder="Dudleya…"
             data-testid="inat-taxon-query"
           />
         </label>
@@ -385,23 +509,9 @@ export function InatTab({
         </Link>
       </p>
       <div className="flex gap-2 items-center flex-wrap">
-        <button className="btn-primary" onClick={() => void search()} disabled={searching || bulk !== null} data-testid="inat-search">
+        <button className="btn-primary" onClick={() => void search()} disabled={searching} data-testid="inat-search">
           {searching ? "Searching…" : "Search"}
         </button>
-        {results.length > 0 && (
-          <button
-            className="btn-secondary"
-            onClick={() => void addAll()}
-            disabled={bulk !== null || freshCount === 0}
-            data-testid="inat-add-all"
-          >
-            {bulk
-              ? `Adding…`
-              : freshCount === 0
-                ? "All added ✓"
-                : `Add all (${freshCount} species${cardsPerSpecies > 1 ? ` → ${freshCount * cardsPerSpecies} cards` : ""})`}
-          </button>
-        )}
         <label className="text-sm ml-auto">
           Limit{" "}
           <select
@@ -454,30 +564,62 @@ export function InatTab({
           {status}
         </p>
       )}
-      {bulk && (
-        <div className="mt-2" data-testid="bulk-progress">
-          <div className="flex justify-between text-xs mb-1" style={{ color: "var(--muted)" }}>
-            <span>{bulk.label}</span>
-            <span>{bulk.done}/{bulk.total}</span>
-          </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--border)" }}>
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${(bulk.done / bulk.total) * 100}%`, background: "var(--accent)" }}
-              role="progressbar"
-              aria-valuenow={bulk.done}
-              aria-valuemin={0}
-              aria-valuemax={bulk.total}
-            />
-          </div>
+      {results.length > 0 && (
+        <div className="flex items-center gap-2 mt-3 text-sm">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            ref={(el) => {
+              if (el) el.indeterminate = !allSelected && selected.size > 0;
+            }}
+            onChange={toggleAll}
+            aria-label="Select all results"
+            data-testid="inat-select-all"
+          />
+          <span style={{ color: "var(--muted)" }}>
+            {selected.size} of {results.length} selected
+          </span>
+          <button
+            className="btn-primary ml-auto"
+            onClick={addSelected}
+            disabled={bulkRunning || selected.size === 0}
+            data-testid="inat-add-selected"
+            title="Adds the selected species as cards in a background job you can watch and cancel in Jobs"
+          >
+            {bulkRunning
+              ? "Adding…"
+              : `Add selected (${selected.size} species${cardsPerSpecies > 1 ? ` → ${selected.size * cardsPerSpecies} cards` : ""})`}
+          </button>
         </div>
       )}
       <ul className="mt-3 divide-y" style={{ borderColor: "var(--border)" }} data-testid="inat-results">
         {results.map((r) => {
           const cards = cardsFor(r);
           return (
-            <li key={r.id} className="flex items-center justify-between py-2">
-              <div>
+            <li key={r.id} className="flex items-center gap-3 py-2" data-testid={`inat-result-${r.id}`}>
+              <input
+                type="checkbox"
+                checked={selected.has(r.id)}
+                onChange={() => toggleSelected(r.id)}
+                aria-label={`Select ${r.common ?? r.name}`}
+                data-testid={`select-result-${r.id}`}
+              />
+              {r.thumb ? (
+                <img
+                  src={r.thumb}
+                  alt=""
+                  loading="lazy"
+                  className="w-10 h-10 rounded object-cover flex-shrink-0"
+                  style={{ background: "var(--border)" }}
+                  onError={(e) => {
+                    e.currentTarget.style.visibility = "hidden";
+                  }}
+                  data-testid={`result-thumb-${r.id}`}
+                />
+              ) : (
+                <span className="w-10 h-10 rounded flex-shrink-0" style={{ background: "var(--border)" }} aria-hidden />
+              )}
+              <div className="flex-1 min-w-0">
                 <span className="font-medium">{r.common ?? r.name}</span>{" "}
                 {r.common && (
                   <span className="italic text-sm" style={{ color: "var(--muted)" }}>
@@ -515,7 +657,7 @@ export function InatTab({
                 onClick={() =>
                   void addResult(r, { exclude: photoIdsInDeck(cards), category: cards[0]?.category })
                 }
-                disabled={busyName !== null || bulk !== null || searching}
+                disabled={busyName !== null || bulkRunning || searching}
                 data-testid={`add-inat-${r.id}`}
               >
                 {busyName === r.name ? "Adding…" : cards.length ? "+ Another" : "+ Add"}
@@ -524,10 +666,15 @@ export function InatTab({
           );
         })}
       </ul>
-      <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
-        “+ Another” adds a second card of the same species with different photos — extras export
-        as “Name (2)” while the card back keeps the clean name, so the photo can't be memorized.
-      </p>
+      {results.length > 0 && (
+        <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
+          Tick species and “Add selected” to fetch photos in a background job — it keeps
+          running (with progress and a cancel button in the Jobs dock) even if you close
+          this dialog. “+ Another” adds a second card of one species with different
+          photos — extras export as “Name (2)” while the card back keeps the clean name,
+          so the photo can't be memorized.
+        </p>
+      )}
     </div>
   );
 }

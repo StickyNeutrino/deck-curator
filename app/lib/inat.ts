@@ -120,7 +120,13 @@ function noteSuccess(): void {
 
 // Single-flight request pacing: one request in flight at a time, minimum gap
 // between request starts (iNat asks for ~1 req/sec; keep a polite margin).
-const MIN_GAP_MS = 1100;
+let MIN_GAP_MS = 1100;
+
+/** Test-only: shrink the pacing gap so suites don't wait ~1s per request.
+ *  Production keeps the polite ~1 req/sec gap. */
+export function setRequestGapForTests(ms: number): void {
+  MIN_GAP_MS = ms;
+}
 let chain: Promise<unknown> = Promise.resolve();
 
 function pace<T>(task: () => Promise<T>): Promise<T> {
@@ -334,4 +340,14 @@ export function photoVariants(photo: { url: string }): string[] {
     if (candidate && !out.includes(candidate)) out.push(candidate);
   }
   return out;
+}
+
+/** Square thumbnail URL for an iNat photo — search-result lists and other
+ *  tiny previews. Returns undefined when there's no photo/url at all. */
+export function photoSquareUrl(
+  photo: { url?: string | null } | null | undefined,
+): string | undefined {
+  const url = photo?.url ?? "";
+  if (!url) return undefined;
+  return url.replace(/\/(square|thumb|small|medium|large|original)\./, "/square.");
 }
