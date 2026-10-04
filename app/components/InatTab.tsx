@@ -2,9 +2,9 @@ import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { Project, SpeciesEntry, NativeStatus } from "~/lib/types";
 import { makeSpecies } from "~/lib/types";
-import { candidatePhotos, pickDistinct, fetchTaxonDetail } from "~/lib/resolve";
+import { candidatePhotos, pickDistinct, fetchTaxonDetail, taxonDetailBatch, type PhotoCandidate, type TaxonDetailFields } from "~/lib/resolve";
 import { acquireMediaSlot } from "~/lib/media";
-import { taxaStatuses, photoSquareUrl, inatGet, type InatTaxon } from "~/lib/inat";
+import { taxaRecords, photoSquareUrl, inatGet, type InatTaxon } from "~/lib/inat";
 import { categoryIdForIconic, labelForCategoryId } from "~/lib/categories";
 import { resolveInatPlace, establishmentToNative } from "~/lib/tools";
 import { startJob, useJobs } from "~/lib/jobs";
@@ -50,6 +50,61 @@ const KINDS: Array<{ id: number; name: string; label: string }> = [
 
 type EstablishmentFilter = "any" | "native" | "non-native";
 
+/** Shared per-run caches for a bulk add (see fetchCard). */
+interface RunCaches {
+  /** Photo candidates by taxon id — variant cards re-pick from the same
+   *  observations response instead of refetching it. */
+  candidates: Map<number, PhotoCandidate[]>;
+  /** Batched scientific details for species the search couldn't pre-fill
+   *  (worldwide searches skip the place-checklist batch). */
+  details?: Map<number, TaxonDetailFields>;
+}
+
+/** Photo downloads run through a small gate: originals can be several MB,
+ *  and a 200-species bulk add must not pile hundreds of in-flight blobs
+ *  into memory. Downloads are S3 fetches (outside iNat's paced API chain),
+ *  so the gate only caps memory — downloads still overlap the next card's
+ *  API call up to this limit. */
+const DOWNLOAD_CONCURRENCY = 6;
+
+interface DownloadPool {
+  run<T>(task: () => Promise<T>): Promise<T>;
+}
+
+/** A tiny counting gate: at most `limit` tasks in flight. Aborting the
+ *  signal releases queued tasks so their fetches observe the abort and
+ *  settle instead of stalling the job's final await. */
+function createDownloadPool(limit: number, signal?: AbortSignal): DownloadPool {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const release = () => {
+    const next = queue.shift();
+    if (next) next();
+    else active--;
+  };
+  signal?.addEventListener("abort", () => {
+    while (queue.length) {
+      active++;
+      queue.shift()!();
+    }
+  }, { once: true });
+  return {
+    run<T>(task: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        const start = () => {
+          task().then(resolve, reject).finally(release);
+        };
+        if (active < limit && !signal?.aborted) {
+          active++;
+          start();
+        } else {
+          queue.push(start);
+        }
+      });
+    },
+  };
+}
+
 /**
  * The iNaturalist search tab. A location (or worldwide scope) + a kind,
  * native-status, and name filter lists the top species observed in the area;
@@ -74,6 +129,12 @@ interface TaxonResult {
    *  location resolved to an iNat place. Best-effort — may stay null. */
   native: NativeStatus | null;
   nativeSource?: string;
+  /** Family from the same place-checklist batch that labels native status
+   *  (iNat's batched taxa records carry ancestors) — bulk adds then need no
+   *  per-card taxon-detail call. Undefined for worldwide searches, where the
+   *  job prefetches details in one batched call instead. */
+  familyLatin?: string;
+  familyCommon?: string;
 }
 
 /** iNat photo ids already used by these entries (slot ids look like `inat:123`). */
@@ -216,19 +277,29 @@ export function InatTab({
           thumb: photoSquareUrl(taxon.default_photo),
           native: null as NativeStatus | null,
           nativeSource: undefined as string | undefined,
+          familyLatin: undefined as string | undefined,
+          familyCommon: undefined as string | undefined,
         }));
       // Best-effort pre-labeling: iNat's place checklist says which species
       // are native / introduced in the search area (one cached batch call —
-      // and the labels ride along on cards added from the results).
+      // and the labels ride along on cards added from the results). The same
+      // batched response carries each taxon's family, which the cards'
+      // scientific details read — no per-card detail call needed later.
       if (hasCoords && found.length) {
         const place = await resolveInatPlace(loc!);
         if (place) {
-          const rows = await taxaStatuses(found.map((r) => r.id), place.id);
+          const rows = await taxaRecords(found.map((r) => r.id), place.id);
           for (const r of found) {
-            const native = establishmentToNative(rows.get(r.id)?.establishment_means);
+            const row = rows.get(r.id);
+            const native = establishmentToNative(row?.establishment_means);
             if (native) {
               r.native = native;
               r.nativeSource = place.name;
+            }
+            const family = row?.ancestors?.find((a) => a.rank === "family");
+            if (family) {
+              r.familyLatin = family.name;
+              r.familyCommon = family.preferred_common_name;
             }
           }
         }
@@ -267,95 +338,168 @@ export function InatTab({
   }, [loc, nameQuery, kind, establishment, resultLimit, searchSettings, cardsFor]);
 
   /**
+   * Fetch phase of adding one card: photo candidates (cached per run, so
+   * variant cards re-pick the same observations response instead of
+   * refetching it), the distinct picks filtered against `exclude`, scientific
+   * enrichment (from the search's checklist response or the run's batched
+   * details when available; the per-taxon detail call is the direct "+ Add"
+   * path's fallback), and the assembled entry whose photos are still
+   * downloads-in-waiting. All rate-limited iNat API traffic happens here.
+   * Throws on failure; callers decide what a null/failure means.
+   */
+  const fetchCard = useCallback(
+    async (
+      result: TaxonResult,
+      opts: { exclude?: Set<string>; category?: string; signal?: AbortSignal; run?: RunCaches },
+    ): Promise<{ entry: SpeciesEntry; picks: PhotoCandidate[]; base: string }> => {
+      const photoScope =
+        loc?.lat != null && loc?.lng != null
+          ? { lat: loc.lat, lng: loc.lng, radiusKm: loc.radiusKm || 10 }
+          : undefined;
+      // Photo candidates: one API call per species per run — N variant cards
+      // re-pick the same response (it already holds the alternatives), each
+      // excluding the photos earlier picks claimed.
+      let candidates = opts.run?.candidates.get(result.id);
+      if (!candidates) {
+        candidates = await candidatePhotos(result.id, photoScope, undefined, {
+          includeVideos: searchSettings.includeMedia,
+          settings: searchSettings,
+          signal: opts.signal,
+        });
+        opts.run?.candidates.set(result.id, candidates);
+      }
+      // Cancelled while fetching: don't build a half-photo card.
+      if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const picked = pickDistinct(
+        candidates.filter((c) => !opts.exclude?.has(String(c.photo.id))),
+        photosPerCard,
+      );
+
+      // Scientific enrichment + category: the search's checklist response
+      // (place-scoped searches fetch it anyway), then the run's batched
+      // detail prefetch, then one cached per-taxon call (direct "+ Add").
+      let category = opts.category;
+      let familyLatin = result.familyLatin;
+      let familyCommon = result.familyCommon;
+      let iconicTaxonId = result.iconicTaxonId;
+      if (familyLatin == null && familyCommon == null) {
+        const batched = opts.run?.details?.get(result.id);
+        if (batched) {
+          familyLatin = batched.familyLatin ?? undefined;
+          familyCommon = batched.familyCommon ?? undefined;
+          iconicTaxonId = batched.iconicTaxonId ?? iconicTaxonId;
+        } else {
+          try {
+            const detail = await fetchTaxonDetail(result.id);
+            if (detail) {
+              familyLatin = detail.familyLatin ?? undefined;
+              familyCommon = detail.familyCommon ?? undefined;
+              iconicTaxonId = detail.iconicTaxonId ?? iconicTaxonId;
+            }
+          } catch {
+            // iNat hiccup — the card still carries name + photos.
+          }
+        }
+      }
+      if (!category) {
+        category = categoryIdForIconic(project, iconicTaxonId);
+      }
+
+      const entry = makeSpecies({
+        category,
+        sciName: result.name,
+        commonName: result.common ?? "",
+        taxonId: result.id,
+        inatResolved: true,
+        familyLatin,
+        familyCommon,
+        native: result.native ?? "unknown",
+        layout: photosPerCard === 1 ? "photo-single" : "photo-trio",
+      });
+      return { entry, picks: picked, base: slugify(result.name) };
+    },
+    [loc, photosPerCard, searchSettings, project.id, project.categories, onChange],
+  );
+
+  /**
+   * Download a card's picked photos through the run's gate and fill
+   * `entry.photos` in pick order (main photo first). Photos come straight
+   * from iNat's S3 bucket — outside the paced API chain — so they overlap
+   * the next card's API call. A failed download just means fewer photos.
+   * Never throws; cancellation is the caller's signal check before writing.
+   */
+  const downloadCardPhotos = useCallback(
+    (
+      entry: SpeciesEntry,
+      picks: PhotoCandidate[],
+      opts: { base: string; signal?: AbortSignal; pool: DownloadPool },
+    ): Promise<void> =>
+      Promise.all(
+        picks.map(async (pick, i) => {
+          try {
+            return await opts.pool.run(() =>
+              acquireMediaSlot(pick.photo, pick.obs, {
+                role: i === 0 ? "main" : "secondary",
+                base: opts.base,
+                includeAnimated: searchSettings.includeMedia,
+                projectId: project.id,
+                signal: opts.signal,
+              }),
+            );
+          } catch {
+            return null; // A failed download just means fewer photos.
+          }
+        }),
+      ).then((slots) => {
+        if (opts.signal?.aborted) return;
+        for (const slot of slots) if (slot) entry.photos.push(slot);
+      }),
+    [searchSettings.includeMedia, project.id],
+  );
+
+  /** Land a finished card in the deck (category row first, if new). */
+  const writeEntry = useCallback(
+    (entry: SpeciesEntry) => {
+      onChange((d) => {
+        if (!d.categories.some((c) => c.id === entry.category)) {
+          d.categories.push({ id: entry.category, label: labelForCategoryId(entry.category) });
+        }
+        d.species.push(entry);
+      });
+    },
+    [onChange],
+  );
+
+  /**
    * Add one search result as a card. When the species is already in the deck
    * this creates an extra card ("variant"); `exclude` keeps its photos
-   * distinct from the cards already in the deck. Family/scientific details
-   * are enriched from the taxon detail API (cached), and the species is
-   * filed into Plants/Fungi/Animals from iNat's taxonomy. `signal` aborts
-   * in-flight fetches when a background job is cancelled.
+   * distinct from the cards already in the deck. `signal` aborts in-flight
+   * fetches when a background job is cancelled.
    */
   const addResult = useCallback(
     async (result: TaxonResult, opts: { quiet?: boolean; exclude?: Set<string>; category?: string; signal?: AbortSignal } = {}): Promise<SpeciesEntry | null> => {
       if (!opts.quiet) setBusyName(result.name);
       try {
-        const photoScope =
-          loc?.lat != null && loc?.lng != null
-            ? { lat: loc.lat, lng: loc.lng, radiusKm: loc.radiusKm || 10 }
-            : undefined;
-        const candidates = await candidatePhotos(result.id, photoScope, opts.exclude, {
-          includeVideos: searchSettings.includeMedia,
-          settings: searchSettings,
-          signal: opts.signal,
-        });
-        // Cancelled while fetching: don't build a half-photo card.
+        const card = await fetchCard(result, opts);
         if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const picked = pickDistinct(candidates, photosPerCard);
         const existingCards = cardsFor(result);
-
-        // Scientific enrichment + category: one cached API call.
-        let category = opts.category;
-        let familyLatin: string | undefined;
-        let familyCommon: string | undefined;
-        let iconicTaxonId = result.iconicTaxonId;
-        try {
-          const detail = await fetchTaxonDetail(result.id);
-          if (detail) {
-            familyLatin = detail.familyLatin ?? undefined;
-            familyCommon = detail.familyCommon ?? undefined;
-            iconicTaxonId = detail.iconicTaxonId ?? iconicTaxonId;
-          }
-        } catch {
-          // iNat hiccup — the card still carries name + photos.
-        }
-        if (!category) {
-          category = categoryIdForIconic(project, iconicTaxonId);
-        }
-
-        const entry = makeSpecies({
-          category,
-          sciName: result.name,
-          commonName: result.common ?? "",
-          taxonId: result.id,
-          inatResolved: true,
-          familyLatin,
-          familyCommon,
-          native: result.native ?? "unknown",
-          layout: photosPerCard === 1 ? "photo-single" : "photo-trio",
+        await downloadCardPhotos(card.entry, card.picks, {
+          base: card.base,
+          signal: opts.signal,
+          pool: createDownloadPool(DOWNLOAD_CONCURRENCY, opts.signal),
         });
-        const base = slugify(result.name);
-        for (let i = 0; i < picked.length; i++) {
-          if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-          const pick = picked[i];
-          try {
-            const slot = await acquireMediaSlot(pick.photo, pick.obs, {
-              role: i === 0 ? "main" : "secondary",
-              base,
-              includeAnimated: searchSettings.includeMedia,
-              projectId: project.id,
-              signal: opts.signal,
-            });
-            if (slot) entry.photos.push(slot);
-          } catch {
-            // A failed download just means fewer photos on the card.
-          }
-          // Cancelled mid-download: abandon the card entirely rather than
-          // land a photo-less one (this throw escapes the per-photo catch).
-          if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        }
-        onChange((d) => {
-          if (!d.categories.some((c) => c.id === entry.category)) {
-            d.categories.push({ id: entry.category, label: labelForCategoryId(entry.category) });
-          }
-          d.species.push(entry);
-        });
+        // Cancelled mid-download: abandon the card entirely rather than
+        // land a photo-less one.
+        if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        writeEntry(card.entry);
         if (!opts.quiet) {
           setStatus(
             existingCards.length
-              ? `Added another card for ${result.name}${entry.photos.length ? ` with ${entry.photos.length} new photo(s)` : " (no CC photos found)"}.`
-              : `Added ${result.name}${entry.photos.length ? ` with ${entry.photos.length} photo(s)` : " (no CC photos found)"}.`,
+              ? `Added another card for ${result.name}${card.entry.photos.length ? ` with ${card.entry.photos.length} new photo(s)` : " (no CC photos found)"}.`
+              : `Added ${result.name}${card.entry.photos.length ? ` with ${card.entry.photos.length} photo(s)` : " (no CC photos found)"}.`,
           );
         }
-        return entry;
+        return card.entry;
       } catch (err) {
         if (!opts.quiet) {
           setStatus(`Could not add ${result.name}: ${err instanceof Error ? err.message : err}`);
@@ -365,13 +509,21 @@ export function InatTab({
         if (!opts.quiet) setBusyName(null);
       }
     },
-    [loc, photosPerCard, searchSettings, project.id, project.categories, cardsFor, onChange],
+    [fetchCard, downloadCardPhotos, writeEntry, cardsFor],
   );
 
   /**
    * Spawn a background job that adds every checked species (cardsPerSpecies
    * cards each, photo-distinct). The job keeps running when this modal
    * closes; progress and cancellation live in the Jobs dock.
+   *
+   * Throughput comes from three batchings, all within iNat's ~1 req/sec
+   * politeness limit (the pacing chain spaces API calls; bursting would trip
+   * the 429 circuit breaker): photo candidates are fetched once per species
+   * and re-picked for variants, scientific details are prefetched in one
+   * batched call per 30 species, and each card's S3 photo downloads overlap
+   * the next card's API phase through a bounded gate — while doc writes stay
+   * in selection order.
    */
   const addSelected = useCallback(() => {
     const chosen = results.filter((r) => selected.has(r.id));
@@ -383,6 +535,11 @@ export function InatTab({
     for (const r of results) {
       usedByTaxon.set(r.id, photoIdsInDeck(cardsFor(r)));
     }
+    // Per-run caches shared by every card in the job (see fetchCard).
+    const run: RunCaches = { candidates: new Map() };
+    // Species the search couldn't pre-fill with family data (worldwide
+    // searches skip the checklist batch) get one batched detail prefetch.
+    const needDetails = chosen.filter((r) => r.familyLatin == null && r.familyCommon == null);
     void startJob(
       {
         kind: "inat-add",
@@ -391,29 +548,58 @@ export function InatTab({
         projectName: project.name,
       },
       async (h) => {
+        if (needDetails.length) {
+          h.progress(0, total, "Resolving species details…");
+          run.details = await taxonDetailBatch(
+            needDetails.map((r) => r.id),
+            h.signal,
+          ).catch(() => undefined);
+        }
         let added = 0;
         let failed = 0;
         let done = 0;
+        // Ordered pipeline: the paced API phase of card N+1 runs while card
+        // N's photo downloads are still in flight, but doc writes stay in
+        // selection order (each write awaits the previous one).
+        const pool = createDownloadPool(DOWNLOAD_CONCURRENCY, h.signal);
+        let writes: Promise<void> = Promise.resolve();
         for (const r of chosen) {
           const used = usedByTaxon.get(r.id)!;
           for (let c = 0; c < cardsPerSpecies; c++) {
             if (h.signal.aborted) throw new DOMException("Aborted", "AbortError");
             h.progress(done, total, `${r.common ?? r.name}${cardsPerSpecies > 1 ? ` — card ${c + 1}/${cardsPerSpecies}` : ""}`);
-            const entry = await addResult(r, { quiet: true, exclude: used, signal: h.signal });
-            // Cancelled mid-item: don't count the half-done species.
+            const card = await fetchCard(r, { exclude: used, signal: h.signal, run }).catch(() => null);
+            // Cancelled mid-item: don't count the half-done card.
             if (h.signal.aborted) throw new DOMException("Aborted", "AbortError");
-            done++;
-            h.progress(done, total, r.common ?? r.name);
-            if (entry) {
-              added++;
-              for (const p of entry.photos) {
-                if (p.id.startsWith("inat:")) used.add(p.id.slice(5));
-              }
-            } else {
+            if (!card) {
               failed++;
+              done++;
+              h.progress(done, total, r.common ?? r.name);
+              continue;
             }
+            // Exclusions apply at pick time: picks are decided in fetch
+            // order, so variant cards fetched back-to-back can't reuse each
+            // other's photos even though their writes complete later. (A
+            // photo that later fails to download stays excluded — variants
+            // err on the side of distinctness.)
+            for (const p of card.picks) used.add(String(p.photo.id));
+            const download = downloadCardPhotos(card.entry, card.picks, {
+              base: card.base,
+              signal: h.signal,
+              pool,
+            });
+            writes = writes.then(async () => {
+              await download;
+              if (h.signal.aborted) return; // cancelled — never land this card
+              writeEntry(card.entry);
+              done++;
+              added++;
+              h.progress(done, total, r.common ?? r.name);
+            });
           }
         }
+        await writes;
+        if (h.signal.aborted) throw new DOMException("Aborted", "AbortError");
         return (
           `Added ${added} of ${total} card${total === 1 ? "" : "s"}${failed ? ` — ${failed} failed` : ""}.` +
           (cardsPerSpecies > 1 ? " Extras export as “Name (2)”, “Name (3)”… with different photos." : "")
@@ -424,7 +610,7 @@ export function InatTab({
     setStatus(
       `Adding ${total} card${total === 1 ? "" : "s"} in the background — watch (and cancel) it in Jobs.`,
     );
-  }, [results, selected, cardsPerSpecies, cardsFor, addResult, project.id, project.name]);
+  }, [results, selected, cardsPerSpecies, cardsFor, fetchCard, downloadCardPhotos, writeEntry, project.id, project.name]);
 
   const toggleSelected = (id: number) => {
     setSelected((prev) => {

@@ -308,24 +308,31 @@ export async function nearbyPlaces(center: { lat: number; lng: number; radiusKm?
 }
 
 /**
- * Place-scoped establishment means + conservation status for many taxa, one
- * cached request per batch (`GET taxa/{id,id,…}?place_id=X` — iNat resolves
- * each taxon against the most specific checklist containing the place).
- * Batches are 30 ids — iNat rejects more with "Too many IDs" (see
- * taxaBatch.ts, which verified the limit).
+ * Full taxon records for many ids, batched 30 per cached request
+ * (`GET taxa/{id,id,…}` — iNat returns complete records, and resolves each
+ * taxon against the most specific checklist containing the place when
+ * `placeId` is set). Batches are 30 ids — iNat rejects more with "Too many
+ * IDs" (see taxaBatch.ts, which verified the limit).
+ *
+ * One batch serves several consumers: checklist fields (establishment_means,
+ * conservation_status) for the native/rarity tools and the search's
+ * native-status pre-labeling, plus the record fields (preferred_common_name,
+ * ancestors → family) that new-card enrichment needs — so a bulk add from a
+ * place search needs no per-card taxon-detail calls at all.
  */
-export async function taxaStatuses(
+export async function taxaRecords(
   ids: number[],
   placeId?: number,
-): Promise<Map<number, Pick<InatTaxon, "id" | "establishment_means" | "conservation_status">>> {
-  const out = new Map<number, Pick<InatTaxon, "id" | "establishment_means" | "conservation_status">>();
+  signal?: AbortSignal,
+): Promise<Map<number, InatTaxon>> {
+  const out = new Map<number, InatTaxon>();
   const unique = [...new Set(ids)].filter((n) => Number.isFinite(n));
   for (const chunk of chunkTaxaIds(unique)) {
     const json = await inatGet<{ results: InatTaxon[] }>(`taxa/${chunk.join(",")}`, {
       place_id: placeId,
-    });
+    }, signal);
     for (const t of json.results) {
-      out.set(t.id, { id: t.id, establishment_means: t.establishment_means, conservation_status: t.conservation_status });
+      out.set(t.id, t);
     }
   }
   return out;

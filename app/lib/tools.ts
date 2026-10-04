@@ -1,6 +1,6 @@
 import type { Project, ProjectCategory, SpeciesEntry, NativeStatus, DeckLocation } from "./types";
 import { searchSettingsOf } from "./types";
-import { taxaStatuses, nearbyPlaces, type InatConservationStatus, type InatEstablishment } from "./inat";
+import { taxaRecords, nearbyPlaces, type InatConservationStatus, type InatEstablishment } from "./inat";
 import { candidatePhotos, pickDistinct, resolveTaxon } from "./resolve";
 import { acquireMediaSlot } from "./media";
 import { slugify } from "./ids";
@@ -237,7 +237,7 @@ async function fetchStatuses(
   const out = new Map<number, StatusRow>();
   if (!place) return out;
   const ids = [...new Set(species.map((s) => s.taxonId!).filter((n) => n != null))];
-  const rows = await taxaStatuses(ids, place.id);
+  const rows = await taxaRecords(ids, place.id);
   onProgress?.(1, 2);
   for (const [id, row] of rows) {
     out.set(id, { establishment: row.establishment_means ?? null, conservation: row.conservation_status ?? null });

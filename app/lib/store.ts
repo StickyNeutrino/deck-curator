@@ -330,3 +330,12 @@ export async function putCachedApi(key: string, body: unknown): Promise<void> {
   const database = await db();
   await database.put("cache", { key, body, fetchedAt: Date.now() }, key);
 }
+
+/** Test helper: drop every cached iNat API response. The cache is shared
+ *  module state (one IndexedDB per test file's worker), so suites stubbing
+ *  the API clear it up front to stay order-independent. */
+export async function clearCachedApi(): Promise<void> {
+  const database = await db();
+  const keys = (await database.getAllKeys("cache")) as string[];
+  for (const key of keys) await database.delete("cache", key);
+}

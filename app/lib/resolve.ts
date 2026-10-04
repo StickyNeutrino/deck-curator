@@ -2,6 +2,7 @@ import {
   isVideoMedia,
   autocompleteTaxon,
   taxonDetail,
+  taxaRecords,
   observations,
   photoVariants,
   isAllowedLicense,
@@ -96,22 +97,47 @@ export function categoryLabelForIconic(iconicTaxonId: number | null | undefined)
   return "Animals";
 }
 
-/** Family + common name + iconic group for a known taxon id (cached by inatGet). */
-export async function fetchTaxonDetail(taxonId: number): Promise<{
+/** Family + common name + iconic group fields a new card needs. */
+export interface TaxonDetailFields {
   commonName: string | null;
   familyLatin: string | null;
   familyCommon: string | null;
   iconicTaxonId: number | null;
-} | null> {
-  const detail = await taxonDetail(taxonId);
-  if (!detail) return null;
-  const family = (detail.ancestors ?? []).find((a) => a.rank === "family") ?? null;
+}
+
+/** Map a full taxon record onto the detail fields (shared by the single and
+ *  batched fetches). */
+export function taxonDetailFields(taxon: InatTaxon): TaxonDetailFields {
+  const family = (taxon.ancestors ?? []).find((a) => a.rank === "family") ?? null;
   return {
-    commonName: detail.preferred_common_name ?? null,
+    commonName: taxon.preferred_common_name ?? null,
     familyLatin: family?.name ?? null,
     familyCommon: family?.preferred_common_name ?? null,
-    iconicTaxonId: detail.iconic_taxon_id ?? null,
+    iconicTaxonId: taxon.iconic_taxon_id ?? null,
   };
+}
+
+/** Family + common name + iconic group for a known taxon id (cached by inatGet).
+ *  The batched `taxonDetailBatch` is preferred in bulk flows — one paced
+ *  request per 30 taxa instead of one per taxon. */
+export async function fetchTaxonDetail(taxonId: number): Promise<TaxonDetailFields | null> {
+  const detail = await taxonDetail(taxonId);
+  return detail ? taxonDetailFields(detail) : null;
+}
+
+/** Detail fields for many taxa at once: the batched `taxa/{ids}` records
+ *  (30 per request), mapped the same way as `fetchTaxonDetail`. Taxa the API
+ *  can't resolve are simply absent from the map. Pass `signal` to cancel
+ *  with the caller's background job. */
+export async function taxonDetailBatch(
+  ids: number[],
+  signal?: AbortSignal,
+): Promise<Map<number, TaxonDetailFields>> {
+  const out = new Map<number, TaxonDetailFields>();
+  for (const [id, record] of await taxaRecords(ids, undefined, signal)) {
+    out.set(id, taxonDetailFields(record));
+  }
+  return out;
 }
 
 export async function resolveTaxon(name: string): Promise<ResolvedTaxon | null> {

@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route } from "react-router";
 import userEvent from "@testing-library/user-event";
 import ProjectPage from "~/routes/project";
 import { JobsDock } from "~/components/JobsDock";
-import { getProject, saveProject } from "~/lib/store";
+import { getProject, saveProject, clearCachedApi } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { resetJobs, getJobs } from "~/lib/jobs";
 import { setRequestGapForTests } from "~/lib/inat";
@@ -104,11 +104,13 @@ function inatFetchMock(): (input: RequestInfo | URL, init?: RequestInit) => Prom
     if (taxaMatch) {
       const ids = taxaMatch[1].split(",").map(Number);
       if (ids.length === 1) return jsonResponse({ total_results: 1, results: [taxonJson(ids[0])] });
-      // Place-scoped checklist lookup (establishment means).
+      // Place-scoped checklist lookup: iNat returns FULL taxon records for
+      // batched ids too (the family fields the add flow reads), plus each
+      // taxon's place-scoped establishment means.
       return jsonResponse({
         total_results: ids.length,
         results: ids.map((id) => ({
-          id,
+          ...taxonJson(id),
           establishment_means: TAXA[id].means
             ? { establishment_means: TAXA[id].means, place: { id: 829, name: "San Diego County" } }
             : null,
@@ -161,6 +163,7 @@ describe("InatTab (mocked iNat API)", () => {
   beforeEach(async () => {
     resetJobs();
     setRequestGapForTests(0);
+    await clearCachedApi(); // the iNat API cache is shared state across this file's tests
     fetchSpy = inatFetchMock();
     vi.stubGlobal("fetch", fetchSpy);
   });
@@ -216,6 +219,70 @@ describe("InatTab (mocked iNat API)", () => {
     expect(bySci.get("Buteo jamaicensis")!.native).toBe("unknown");
     expect(bySci.get("Dudleya edulis")!.familyLatin).toBe("Crassulaceae");
     expect(speciesOf(loaded).every((s) => s.photos.length === 1)).toBe(true);
+  });
+
+  it("adds several cards per species from one photo search — variants re-pick the cached candidates, photos stay distinct", async () => {
+    // Species 101 offers three CC photos; one observations query must serve
+    // all three variant cards (iNat's ~1 req/sec pacing makes a per-card
+    // search the dominant cost of bulk adds).
+    const base = inatFetchMock();
+    let photoSearches = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (/\/v1\/observations$/.test(url.pathname) && url.searchParams.get("taxon_id") === "101") {
+          photoSearches++;
+          return jsonResponse({
+            total_results: 1,
+            results: [{
+              id: 5000 + 101,
+              uri: `https://www.inaturalist.org/observations/${5000 + 101}`,
+              quality_grade: "research",
+              user: { name: "Alice" },
+              place_guess: "San Diego",
+              photos: [9101, 9102, 9103].map((photoId) => ({
+                id: photoId,
+                license_code: "cc-by",
+                attribution: "(c) Alice, some rights reserved (CC BY)",
+                url: `https://inaturalist-open-data.s3.amazonaws.com/photos/${photoId}/medium.jpg`,
+                file_content_type: "image/jpeg",
+              })),
+            }],
+          });
+        }
+        return base(input, init);
+      }),
+    );
+
+    const user = userEvent.setup();
+    const project = await fixtureProject();
+    renderProject(project.id);
+
+    await user.click(await screen.findByTestId("add-species"));
+    await user.click(screen.getByTestId("inat-search"));
+    await screen.findByTestId("inat-result-101");
+
+    // Only species 101; three cards, one photo each.
+    await user.click(screen.getByTestId("inat-select-all")); // clears the default all-selection
+    await user.click(screen.getByTestId("select-result-101"));
+    await user.selectOptions(screen.getByTestId("inat-photos-per-card"), "1");
+    await user.selectOptions(screen.getByTestId("inat-cards-per-species"), "3");
+    await user.click(screen.getByTestId("inat-add-selected"));
+
+    await waitFor(() => expect(getJobs()[0].status).toBe("completed"));
+    expect(getJobs()[0].message).toContain("Added 3 of 3 cards");
+    // One photo search for the species — the variants picked from the same
+    // response instead of refetching it.
+    expect(photoSearches).toBe(1);
+
+    // Three cards landed in selection order, each with a different photo.
+    const loaded = (await getProject(project.id))!;
+    expect(loaded.species).toHaveLength(3);
+    expect(loaded.species.map((s) => s.sciName)).toEqual(["Dudleya edulis", "Dudleya edulis", "Dudleya edulis"]);
+    expect(loaded.species.map((s) => s.photos[0]!.id)).toEqual(["inat:9101", "inat:9102", "inat:9103"]);
+    // Family details still ride along (from the batched checklist response).
+    expect(loaded.species.every((s) => s.familyLatin === "Crassulaceae")).toBe(true);
   });
 
   it("filters by native status (place checklist) and hides unlabeled species", async () => {
