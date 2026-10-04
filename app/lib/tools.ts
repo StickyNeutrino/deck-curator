@@ -1,12 +1,19 @@
 import type { Project, ProjectCategory, SpeciesEntry, NativeStatus, DeckLocation } from "./types";
+import { searchSettingsOf } from "./types";
 import { taxaStatuses, nearbyPlaces, type InatConservationStatus, type InatEstablishment } from "./inat";
+import { candidatePhotos, pickDistinct, resolveTaxon } from "./resolve";
+import { acquireMediaSlot } from "./media";
+import { slugify } from "./ids";
+import { photoCap } from "./cardGeometry";
 
 /**
  * Deck tools: batch actions that pull facts from iNaturalist and fill in
- * fields the curator would otherwise set by hand. Two flavors today —
- * "label native / invasive" (place checklists → native status, optionally
- * invasive borders) and "label conservation status" (threatened listings →
- * rarity text, optionally notable borders).
+ * fields the curator would otherwise set by hand. Four flavors today —
+ * "fill gaps & re-sort categories" (lives in enrich.ts), "label native /
+ * invasive" (place checklists → native status, optionally invasive borders),
+ * "label conservation status" (threatened listings → rarity text, optionally
+ * notable borders), and "fill missing photos" (worldwide CC-photo search →
+ * empty photo slots — the species-page photo browser, batched).
  *
  * Tools are advisory: they only fill empty/unknown fields and never overwrite
  * a value the curator already set — anything they would have changed
@@ -34,6 +41,13 @@ export interface LabelNativeOptions {
 export interface LabelRarityOptions {
   /** Also set the blue notable border on threatened/imperiled species. */
   notableBorder?: boolean;
+}
+
+export interface FillPhotosOptions {
+  /** Also top up cards that already have some photos but empty slots (the
+   *  species-page Auto-pick behavior). False restricts the tool to cards
+   *  with no photos at all. Default: on. */
+  topUp?: boolean;
 }
 
 /** Species the tool is applied to: a selection, or everything when unset. */
@@ -369,5 +383,130 @@ export async function labelRarity(
       detail: "run “Fill gaps & re-sort categories” first",
     });
   }
+  return { project: next, report };
+}
+
+/* ------------------------------------------------------------------ */
+/* Tool: fill missing photos                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * "Fill missing photos": for every card with empty photo slots, search iNat
+ * for CC-licensed photos — worldwide, under the deck's license/quality
+ * settings, exactly like the species-page photo browser — and auto-pick the
+ * best distinct-observer set into the empty slots.
+ *
+ * This exists because cards added from an iNat place search fetch their
+ * photos *scoped to that circle*; when nothing usable was observed nearby the
+ * card lands photo-less, even though the (worldwide) species page finds
+ * plenty of candidates. This tool re-runs that worldwide search in bulk.
+ *
+ * Advisory like the other tools: existing photos are never touched or
+ * reordered, and a photo already used by any card in the deck is never
+ * re-picked (variant cards must stay photo-distinct). Unresolvable names are
+ * reported instead of guessed.
+ */
+export async function fillMissingPhotos(
+  project: Project,
+  scope: Scope | undefined,
+  options: FillPhotosOptions = {},
+  onProgress?: (done: number, total: number, label?: string) => void,
+  signal?: AbortSignal,
+): Promise<{ project: Project; report: ToolReport }> {
+  const next = structuredClone(project);
+  const settings = searchSettingsOf(next);
+  const targets = scopeOf(next, scope).filter((s) =>
+    options.topUp === false ? s.photos.length === 0 : s.photos.length < photoCap(s.layout),
+  );
+
+  const report: ToolReport = { considered: targets.length, filled: 0, noData: 0, conflicts: [] };
+  if (!targets.length) return { project: next, report };
+
+  // Photo ids already in the deck (slot ids look like `inat:<photoId>`) — a
+  // refill never re-picks an image another card already carries.
+  const usedPhotoIds = new Set<string>();
+  for (const s of next.species) {
+    for (const p of s.photos) {
+      if (p.id.startsWith("inat:")) usedPhotoIds.add(p.id.slice(5));
+    }
+  }
+
+  for (let i = 0; i < targets.length; i++) {
+    const draft = targets[i];
+    const label = labelOf(draft);
+    onProgress?.(i, targets.length, label);
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    // The taxon to search: the card's own id when known, otherwise a fresh
+    // name resolution — the species-page browser resolves by name the same
+    // way. Filling the empty taxonId is advisory like every other field.
+    let taxonId = draft.taxonId;
+    if (taxonId == null) {
+      const query = draft.sciName || draft.commonName;
+      if (!query) {
+        report.conflicts.push({ species: label, detail: "no name to search with" });
+        continue;
+      }
+      try {
+        const taxon = await resolveTaxon(query);
+        if (!taxon) {
+          report.conflicts.push({
+            species: label,
+            detail: `“${query}” didn't resolve on iNat — run “Fill gaps & re-sort categories” first`,
+          });
+          continue;
+        }
+        taxonId = taxon.taxonId;
+        draft.taxonId = taxon.taxonId;
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        report.conflicts.push({ species: label, detail: "iNat lookup failed — try again later" });
+        continue;
+      }
+    }
+
+    const remaining = photoCap(draft.layout) - draft.photos.length;
+    const candidates = await candidatePhotos(taxonId, undefined, usedPhotoIds, {
+      includeVideos: settings.includeMedia,
+      settings,
+      signal,
+    });
+    const picked = pickDistinct(candidates, remaining);
+    let added = 0;
+    let failed = 0;
+    for (const pick of picked) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      try {
+        const slot = await acquireMediaSlot(pick.photo, pick.obs, {
+          role: draft.photos.length === 0 ? "main" : "secondary",
+          base: slugify(draft.commonName || draft.sciName || "photo"),
+          includeAnimated: settings.includeMedia,
+          projectId: next.id,
+          signal,
+        });
+        if (slot) {
+          draft.photos.push(slot);
+          usedPhotoIds.add(String(pick.photo.id));
+          added++;
+        } else {
+          failed++;
+        }
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        failed++;
+      }
+    }
+    if (added > 0) {
+      report.filled++;
+    } else if (candidates.length === 0) {
+      report.noData++;
+    } else {
+      report.conflicts.push({
+        species: label,
+        detail: `found ${candidates.length} CC photo(s) but none downloaded`,
+      });
+    }
+  }
+  onProgress?.(targets.length, targets.length);
   return { project: next, report };
 }

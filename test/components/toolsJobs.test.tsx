@@ -25,6 +25,8 @@ const PLACES = [
 
 const MEANS: Record<number, string> = { 68205: "native", 46017: "introduced", 6930: "native" };
 
+const JPEG_BYTES = new Uint8Array(6000); // > downloadPhoto's 5000-byte floor
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 }
@@ -34,6 +36,29 @@ function inatFetchMock(): (input: RequestInfo | URL) => Promise<Response> {
     const url = new URL(String(input));
     if (/\/v1\/places\/nearby$/.test(url.pathname)) {
       return jsonResponse({ total_results: 3, results: { standard: PLACES, community: [] } });
+    }
+    if (/\/v1\/observations$/.test(url.pathname)) {
+      // One CC-licensed research-grade photo for the photo-filling tool.
+      const taxonId = Number(url.searchParams.get("taxon_id"));
+      const results = taxonId === 68205
+        ? [{
+            id: 55,
+            uri: "https://www.inaturalist.org/observations/55",
+            quality_grade: "research",
+            user: { name: "Oak Watcher" },
+            photos: [{
+              id: 777,
+              license_code: "cc-by",
+              attribution: "Oak Watcher, some rights reserved (CC BY)",
+              url: "https://inaturalist-open-data.s3.amazonaws.com/photos/777/square.jpg",
+              file_content_type: "image/jpeg",
+            }],
+          }]
+        : [];
+      return jsonResponse({ total_results: results.length, results });
+    }
+    if (/\/photos\/\d+\/(original|large|medium)\./.test(url.pathname)) {
+      return new Response(JPEG_BYTES, { status: 200, headers: { "content-type": "image/jpeg" } });
     }
     if (/\/v1\/taxa\/autocomplete$/.test(url.pathname)) {
       return jsonResponse({
@@ -185,5 +210,40 @@ describe("deck tools as background jobs", () => {
     const loaded = (await getProject(project.id))!;
     expect(loaded.species[0].familyLatin).toBe("Fagaceae");
     expect(loaded.species[0].familyCommon).toBe("Oak family");
+  });
+
+  it("fills missing photos in a job and lands the photos in the deck", async () => {
+    const user = userEvent.setup();
+    const project = await fixtureProject();
+    project.species = [makeSpecies({ commonName: "Coast Live Oak", sciName: "Quercus agrifolia", category: "plants", taxonId: 68205 })];
+    await saveProject(project);
+    renderProject(project.id);
+
+    await screen.findByTestId("species-row");
+    await user.click(screen.getByTestId("tools-button"));
+    const menu = screen.getByTestId("tools-menu");
+    // The menu advertises what it would work on.
+    expect(within(menu).getByTestId("tool-photos")).toHaveTextContent("(1 to fill)");
+    await user.click(within(menu).getByTestId("tool-photos"));
+    expect(screen.queryByTestId("tools-menu")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await waitFor(() => expect(getJobs()[0].status).toBe("completed"));
+    });
+    expect(getJobs()[0].label).toBe("Fill missing photos (all 1 species)");
+    expect(getJobs()[0].message).toContain("added photos to 1 of 1 cards");
+
+    // The deck gained the auto-picked photo, credit and all.
+    const loaded = (await getProject(project.id))!;
+    expect(loaded.species[0].photos).toHaveLength(1);
+    expect(loaded.species[0].photos[0].id).toBe("inat:777");
+    expect(loaded.species[0].photos[0].role).toBe("main");
+    expect(loaded.species[0].photos[0].credit).toMatchObject({ observer: "Oak Watcher", license: "cc-by" });
+
+    // The dock surfaces the outcome too.
+    await user.click(await screen.findByTestId("jobs-dock"));
+    const panel = screen.getByTestId("jobs-modal");
+    const item = within(panel).getByText("Fill missing photos (all 1 species)").closest("li")!;
+    expect(within(item).getByText("Completed")).toBeInTheDocument();
   });
 });

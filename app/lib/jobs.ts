@@ -16,7 +16,7 @@ import { uuid } from "./uuid";
  * kills them by definition (they live in this page's JS context).
  */
 
-export type JobKind = "inat-add" | "tool-enrich" | "tool-native" | "tool-rarity";
+export type JobKind = "inat-add" | "tool-enrich" | "tool-native" | "tool-rarity" | "tool-photos";
 
 export type JobStatus = "running" | "completed" | "failed" | "cancelled";
 
