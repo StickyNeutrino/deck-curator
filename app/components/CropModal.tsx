@@ -142,13 +142,20 @@ export function CropModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      // Scrollable backdrop: when the viewport is too short to fit the dialog
+      // (tall photo on a small screen), it scrolls rather than clipping the
+      // save controls off-screen.
+      className="fixed inset-0 z-50 flex justify-center overflow-y-auto bg-black/60 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
       data-testid="crop-modal"
     >
-      <div className="rounded-lg bg-white p-5 max-w-2xl w-full" role="dialog" aria-label="Crop photo">
+      <div
+        className="rounded-lg bg-white p-5 max-w-2xl w-full my-auto"
+        role="dialog"
+        aria-label="Crop photo"
+      >
         <h2 className="font-semibold mb-1">Crop photo</h2>
         <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
           Drag inside the window to move it; drag a corner to resize (the window keeps the card
@@ -159,11 +166,19 @@ export function CropModal({
           <div
             ref={frameRef}
             className="relative mx-auto select-none touch-none"
-            style={{ maxWidth: 480 }}
+            style={{
+              // Cap by both width and height so very tall photos can't push
+              // the save controls off-screen: the frame (and the modal around
+              // it) always fits the viewport, whatever the photo's shape. The
+              // img fills the frame exactly (same aspect), so the overlay
+              // percentages stay aligned with the drawn image.
+              width: `min(480px, 100%, calc(56vh * ${imageAspect ?? 1}))`,
+              aspectRatio: String(imageAspect ?? 1),
+            }}
             onPointerMove={(e) => onDragMove(e)}
             onPointerUp={endDrag}
           >
-            <img src={url} alt="" className="w-full block rounded" draggable={false} />
+            <img src={url} alt="" className="absolute inset-0 h-full w-full rounded" draggable={false} />
             {/* dimmed overlay outside the crop window */}
             <div className="absolute inset-0 bg-black/55" style={{ clipPath: cropClipPath(crop) }} />
             <div
