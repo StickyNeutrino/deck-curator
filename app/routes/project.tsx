@@ -7,7 +7,8 @@ import { ToolsMenu } from "~/components/ToolsMenu";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { BORDER_STYLES, borderStyleDef, type Project, type SpeciesEntry } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
-import { ensureRepo, commitDeckVersion } from "~/lib/versioning";
+import { useAutoVersion } from "~/lib/useAutoVersion";
+import { ensureRepo } from "~/lib/versioning";
 import { authorPromptPending, consumeAuthorPromptRequest, markAuthorAsked } from "~/lib/author";
 import { allTags } from "~/components/TagsManager";
 
@@ -53,18 +54,16 @@ export default function ProjectPage() {
     if (consumeAuthorPromptRequest() && authorPromptPending()) setShowAuthorPrompt(true);
   }, [project]);
 
-  // Auto-version: commit the deck to its git history shortly after the last
-  // change settles. Failures are swallowed inside commitDeckVersion. This is
-  // also the fallback moment to ask (for this session) who to stamp onto
-  // versions — for decks opened without going through deck creation.
-  useEffect(() => {
-    if (!project) return;
-    const handle = setTimeout(() => {
-      void commitDeckVersion(project);
+  // Version-history autosave lives in lib/useAutoVersion: every tab's record
+  // save arms the shared debounce, and leaving a page flushes what's pending.
+  // This page only adds the settle hook-up — the fallback moment to ask (for
+  // this session) who to stamp onto versions, for decks opened without going
+  // through deck creation.
+  const versionError = useAutoVersion(projectId, {
+    onSettle: () => {
       if (everEditedRef.current && authorPromptPending()) setShowAuthorPrompt(true);
-    }, 12_000);
-    return () => clearTimeout(handle);
-  }, [project]);
+    },
+  });
 
   // Selection that survives table edits: dropped ids fall out via the
   // intersection with project.species (see scopeIds below).
@@ -106,6 +105,11 @@ export default function ProjectPage() {
       {saveError && (
         <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
           {saveError}
+        </p>
+      )}
+      {versionError && (
+        <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
+          {versionError}
         </p>
       )}
       <nav className="mb-4 text-sm">

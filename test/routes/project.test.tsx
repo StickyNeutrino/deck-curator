@@ -8,6 +8,7 @@ import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import { saveProject } from "~/lib/store";
 import { getAuthor, requestAuthorPrompt } from "~/lib/author";
+import { ensureRepo, listVersions } from "~/lib/versioning";
 
 function renderProject(id: string) {
   return render(
@@ -309,5 +310,29 @@ describe("project route", () => {
       window.localStorage.clear();
       window.sessionStorage.clear();
     }
+  });
+
+  it("flushes a pending autosave when the cards page is left", async () => {
+    // The old autosave timer was cancelled on navigation — an edit followed
+    // by leaving within the debounce window never produced a version. The
+    // flush on unmount must commit it instead.
+    const project = newProject("Flush on leave");
+    project.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" }));
+    await saveProject(project);
+    await ensureRepo(project);
+    const before = (await listVersions(project.id)).length;
+
+    renderProject(project.id);
+    const row = await screen.findByTestId("species-row");
+    fireEvent.change(within(row).getByLabelText("Native status of Oak"), {
+      target: { value: "native" },
+    });
+    cleanup();
+
+    await waitFor(async () => {
+      expect((await listVersions(project.id)).length).toBeGreaterThan(before);
+    });
+    const messages = (await listVersions(project.id)).map((v) => v.message);
+    expect(messages[0]).toContain("Autosave");
   });
 });

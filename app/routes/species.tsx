@@ -12,6 +12,7 @@ import { uuid } from "~/lib/uuid";
 import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeometry";
 import { BORDER_STYLES, searchSettingsOf, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
+import { scheduleAutoVersion, useAutoVersion } from "~/lib/useAutoVersion";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { FrameModal } from "~/components/FrameModal";
 import { CreditModal, UPLOAD_DEFAULT_CREDIT } from "~/components/CreditModal";
@@ -116,8 +117,15 @@ export default function SpeciesPage() {
     setProject(next);
     setSaved(true);
     setSaveError(null);
+    // The species editor keeps its own draft and saves explicitly — arm the
+    // version autosave here so "Save" lands in git history like any edit.
+    // Leaving the page flushes whatever the debounce hasn't committed yet.
+    scheduleAutoVersion(next);
     return next;
   }, [draft, project, projectId]);
+
+  // Flush + autosave-error banner wiring (must run before the early returns).
+  const versionError = useAutoVersion(projectId);
 
   if (!project) {
     return (
@@ -166,6 +174,11 @@ export default function SpeciesPage() {
           {saveError && (
             <p className="text-sm mb-2" role="alert" style={{ color: "var(--danger)" }} data-testid="species-save-error">
               Couldn't save: {saveError}
+            </p>
+          )}
+          {versionError && (
+            <p className="text-sm mb-2" role="alert" style={{ color: "var(--danger)" }}>
+              {versionError}
             </p>
           )}
           <div className="flex gap-2 mt-4">

@@ -118,6 +118,9 @@ export async function renameProject(oldId: string, next: Project): Promise<void>
     blobCache.clear();
     for (const [cachedKey, blob] of moved) blobCache.set(cachedKey, blob);
   }
+  // Every file moved between prefixes — invalidate both sides' caches.
+  notifyFileChange(oldId, null);
+  notifyFileChange(next.id, null);
 }
 
 /** Atomically replace a project's files and record — used by version
@@ -148,6 +151,7 @@ export async function restoreSnapshot(
   // The restore may have swapped bytes under existing keys — stale cache
   // entries would render the pre-restore photos.
   dropCachedBlobs(`${projectId}/`);
+  notifyFileChange(projectId, null);
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -158,6 +162,7 @@ export async function deleteProject(id: string): Promise<void> {
     ...keys.filter((k) => k.startsWith(`${id}/`)).map((k) => database.delete("files", k)),
   ]);
   dropCachedBlobs(`${id}/`);
+  notifyFileChange(id, null);
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -187,6 +192,7 @@ export async function putFile(projectId: string, key: string, blob: Blob): Promi
   // A fresh write is by definition not stale: refresh the warm cache so the
   // next preview (e.g. back on the review page) shows the new bytes at once.
   rememberBlob(fileKey(projectId, key), blob);
+  notifyFileChange(projectId, key);
 }
 
 interface StoredFile {
@@ -225,6 +231,32 @@ export async function deleteFile(projectId: string, key: string): Promise<void> 
   const database = await db();
   await database.delete("files", fileKey(projectId, key));
   blobCache.delete(fileKey(projectId, key));
+  notifyFileChange(projectId, key);
+}
+
+// ---------- file-change notifications ----------
+// Some consumers keep per-file session caches that must never outlive the
+// bytes they describe — versioning fingerprints committed photos so commits
+// can skip re-reading unchanged media, and a stale fingerprint there would
+// silently drop a replaced photo from history. store can't import those
+// consumers (circular), so they subscribe here and we notify on every write
+// path that can change bytes under an existing key.
+
+type FileChangeListener = (projectId: string, fileKey: string | null) => void;
+const fileChangeListeners = new Set<FileChangeListener>();
+
+/** Listen for file writes and deletions. `fileKey` is null when every file
+ *  of the project changed at once (rename, restore, deck deletion).
+ *  Returns an unsubscribe function. */
+export function onFileChange(listener: FileChangeListener): () => void {
+  fileChangeListeners.add(listener);
+  return () => {
+    fileChangeListeners.delete(listener);
+  };
+}
+
+function notifyFileChange(projectId: string, fileKey: string | null): void {
+  for (const listener of fileChangeListeners) listener(projectId, fileKey);
 }
 
 // ---------- warm session blob cache ----------

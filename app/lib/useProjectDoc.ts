@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getProject, saveProject } from "./store";
+import { scheduleAutoVersion } from "./useAutoVersion";
 import type { Project } from "./types";
 
 /**
@@ -57,6 +58,11 @@ export function useProjectDoc(projectId: string | undefined) {
   useEffect(() => {
     if (!project || !dirtyRef.current) return;
     dirtyRef.current = false;
+    // The git version autosave rides on every record save, from any tab:
+    // arm (re-arm) the shared debounce with this state. It's armed before
+    // the record write resolves on purpose — a version commit is also the
+    // safety net when the record save itself fails.
+    scheduleAutoVersion(project);
     void (async () => {
       try {
         await saveProject(project);

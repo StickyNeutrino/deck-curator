@@ -7,6 +7,7 @@ import { CardFront, CardBack, type BlobResolver } from "~/components/CardPreview
 import { allTags } from "~/components/TagsManager";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { useProjectDoc } from "~/lib/useProjectDoc";
+import { useAutoVersion } from "~/lib/useAutoVersion";
 import { createBlobLoader } from "~/lib/blobLoader";
 
 /**
@@ -27,6 +28,9 @@ export default function ReviewPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const { project, notFound, loadError, saveError, update } = useProjectDoc(projectId);
+  // Version-history autosave is armed by the record save above, from this
+  // tab too — flag toggles here land in git history like any edit.
+  const versionError = useAutoVersion(projectId);
   // Photos load through a prioritized queue instead of one big all-or-nothing
   // read: the first cards land first, the rest fill in as they scroll close
   // to the viewport, and warm blobs (e.g. after a round trip to the editor)
@@ -170,6 +174,11 @@ export default function ReviewPage() {
       {saveError && (
         <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
           {saveError}
+        </p>
+      )}
+      {versionError && (
+        <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
+          {versionError}
         </p>
       )}
       <ProjectTabs projectId={projectId ?? ""} active="review" />

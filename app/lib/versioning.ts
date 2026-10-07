@@ -2,7 +2,7 @@ import type { Project } from "./types";
 import { migrateProject, referencedFileKeys } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
-import { getFile, restoreSnapshot } from "./store";
+import { getFile, restoreSnapshot, onFileChange } from "./store";
 import { getAuthor } from "./author";
 import "./polyfills";
 
@@ -46,6 +46,10 @@ export const dirFor = (projectId: string): string => `/${projectId}`;
  *  are remapped so the next autosave doesn't recommit unchanged photos. */
 export async function renameRepo(oldId: string, newId: string): Promise<void> {
   if (oldId === newId) return;
+  await withProjectLock(oldId, () => renameRepoUnlocked(oldId, newId));
+}
+
+async function renameRepoUnlocked(oldId: string, newId: string): Promise<void> {
   const fs = await getFs();
   const from = dirFor(oldId);
   const to = dirFor(newId);
@@ -97,6 +101,22 @@ async function removeDir(path: string): Promise<void> {
  *  unchanged one. */
 const writtenFingerprints = new Map<string, string>();
 
+// Photo bytes can change under an existing key — a re-upload, an archive
+// re-import, a version restore. Every store write path notifies (see
+// store.onFileChange); drop the session's cached fingerprint so the next
+// commit re-reads the file instead of trusting stale content. Without this,
+// commitAll would skip a photo whose bytes were just replaced.
+onFileChange((projectId, fileKey) => {
+  if (fileKey === null) {
+    const prefix = `${projectId}/`;
+    for (const key of [...writtenFingerprints.keys()]) {
+      if (key.startsWith(prefix)) writtenFingerprints.delete(key);
+    }
+  } else {
+    writtenFingerprints.delete(`${projectId}/${fileKey}`);
+  }
+});
+
 /** Cheap content fingerprint: FNV-1a and djb2 over the bytes (64 bits of
  *  mixing, no collision-prone size shortcut). */
 function contentFingerprintBytes(bytes: Uint8Array): string {
@@ -123,31 +143,47 @@ function fingerprint(project: Project): string {
 
 const lastFingerprints = new Map<string, string>();
 
+/** Git operations on one project's repo must never interleave. An autosave
+ *  flush fires when a page unmounts — exactly when the next page mounts and
+ *  runs ensureRepo — and the export page commits and restores on its own.
+ *  Two concurrent writers on the same LightningFS directory would race the
+ *  index and the ref update, so everything repo-touching waits its turn. */
+const projectQueues = new Map<string, Promise<unknown>>();
+
+function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const tail = (projectQueues.get(projectId) ?? Promise.resolve()).catch(() => undefined);
+  const run = tail.then(fn);
+  projectQueues.set(projectId, run.catch(() => undefined));
+  return run;
+}
+
 /** Create the repo (with an initial commit) if it doesn't exist yet — or if
  *  it exists but was created before any commit ever landed (older sessions
  *  could init a bare repo that never gained history). */
 export async function ensureRepo(project: Project, files?: Map<string, Blob>): Promise<void> {
-  const fs = await getFs();
-  const git = await getGit();
-  const dir = dirFor(project.id);
-  let hasRepo = false;
-  try {
-    await fs.promises.stat(`${dir}/.git`);
-    hasRepo = true;
-  } catch {
-    // No repo yet — fall through to init.
-  }
-  if (!hasRepo) {
-    await git.init({ fs, dir });
-  }
-  try {
-    const versions = await listVersions(project.id, 1);
-    if (versions.length === 0) {
-      await commitAll(project, files, `Created deck “${project.name}”`, { force: true });
+  await withProjectLock(project.id, async () => {
+    const fs = await getFs();
+    const git = await getGit();
+    const dir = dirFor(project.id);
+    let hasRepo = false;
+    try {
+      await fs.promises.stat(`${dir}/.git`);
+      hasRepo = true;
+    } catch {
+      // No repo yet — fall through to init.
     }
-  } catch {
-    // History unreadable — autosave will retry on the next change.
-  }
+    if (!hasRepo) {
+      await git.init({ fs, dir });
+    }
+    try {
+      const versions = await listVersions(project.id, 1);
+      if (versions.length === 0) {
+        await commitAll(project, files, `Created deck “${project.name}”`, { force: true });
+      }
+    } catch {
+      // History unreadable — autosave will retry on the next change.
+    }
+  });
 }
 
 /** Commit the current project state. `files` are photo blobs if already at
@@ -155,59 +191,89 @@ export async function ensureRepo(project: Project, files?: Map<string, Blob>): P
  *  Returns the new commit's oid, or null when there was nothing to commit.
  *  With `silent` (the default) failures are swallowed — versioning must
  *  never block editing; pass `silent: false` for user-initiated saves that
- *  need honest error reporting. */
+ *  need honest error reporting. `onError` receives failures even in silent
+ *  mode, so autosave can surface them instead of quietly going dead. */
 export async function commitDeckVersion(
   project: Project,
   files?: Map<string, Blob>,
   message?: string,
-  { silent = true }: { silent?: boolean } = {},
+  { silent = true, onError }: { silent?: boolean; onError?: (err: unknown) => void } = {},
 ): Promise<string | null> {
   try {
-    const fp = fingerprint(project);
-    if (lastFingerprints.get(project.id) === fp && !message) {
-      // Project JSON is unchanged — but photo BYTES can change under an
-      // unchanged key. Skip only when this session has recorded every
-      // referenced file's content; otherwise verify against HEAD once and
-      // seed the cache (a fresh session starts with an empty map, and the
-      // seed also keeps "first autosave after reload" from committing
-      // byte-identical state).
-      const keys = referencedFileKeys(project);
-      if (keys.size === 0 || [...keys].every((k) => writtenFingerprints.has(k))) {
-        return null;
+    return await withProjectLock(project.id, async () => {
+      const fp = fingerprint(project);
+      if (lastFingerprints.get(project.id) === fp && !message) {
+        // Project JSON is unchanged — but photo BYTES can change under an
+        // unchanged key (the session cache is invalidated on every write,
+        // see onFileChange above). When every referenced file is verified
+        // this session, there is nothing to commit.
+        if (await unchangedAndCached(project)) return null;
+        // Photo contents changed under unchanged metadata — fall through
+        // and commit so the new bytes are actually recorded.
       }
-      if (await photosUnchangedSinceHead(project)) {
-        for (const fileKey of keys) {
-          const blob = await getFile(project.id, fileKey);
-          if (blob) writtenFingerprints.set(`${project.id}/${fileKey}`, await contentFingerprint(blob));
+      if (!lastFingerprints.has(project.id) && !message) {
+        // A fresh session starts with an empty in-memory fingerprint map —
+        // seed it from the repo so "first autosave after reload" doesn't
+        // commit byte-identical state. (Named versions always commit.)
+        const headFp = await headProjectFingerprint(project.id);
+        if (headFp !== null) {
+          lastFingerprints.set(project.id, headFp);
+          if (headFp === fp && (await unchangedAndCached(project))) return null;
         }
-        return null;
       }
-      // Photo contents changed under unchanged metadata — fall through and
-      // commit so the new bytes are actually recorded.
-    }
-    if (!lastFingerprints.has(project.id) && !message) {
-      // A fresh session starts with an empty in-memory fingerprint map —
-      // seed it from the repo so "first autosave after reload" doesn't
-      // commit byte-identical state. (Named versions always commit.)
-      const headFp = await headProjectFingerprint(project.id);
-      if (headFp !== null) {
-        lastFingerprints.set(project.id, headFp);
-        if (headFp === fp && (await photosUnchangedSinceHead(project))) return null;
-      }
-    }
-    return await commitAll(project, files, message ?? defaultCommitMessage(project));
+      return await commitAll(project, files, message ?? defaultCommitMessage(project));
+    });
   } catch (err) {
+    onError?.(err);
     if (!silent) throw err;
     console.warn("Version commit failed (continuing without history):", err);
     return null;
   }
 }
 
-/** True when every referenced photo's live bytes match the bytes committed
- *  at HEAD. One-time cost per decision: reads both sides and compares
- *  content fingerprints (git tree oids identify content, but the live side
- *  is hashed with FNV, so bytes are compared like-for-like). */
-async function photosUnchangedSinceHead(project: Project): Promise<boolean> {
+/** True when there is nothing to commit for the current state: every
+ *  referenced photo already has a session-verified fingerprint (entries are
+ *  invalidated on every byte-changing write), or a one-time comparison
+ *  against HEAD confirms the live bytes match — seeding the cache so the
+ *  next decision is the cheap one. */
+async function unchangedAndCached(project: Project): Promise<boolean> {
+  const keys = [...referencedFileKeys(project)];
+  if (keys.length === 0) return true;
+  const missing = keys.filter((k) => !writtenFingerprints.has(`${project.id}/${k}`));
+  if (missing.length === 0) return true;
+  // A reference with no live bytes (dangling — validation flags it at export
+  // time) can never produce a file write, so record it as verified instead
+  // of re-deciding on every autosave. The empty marker never collides with
+  // a real fingerprint, and a later putFile invalidates it like any write.
+  const live = new Map<string, Blob>();
+  const verified = new Map<string, string>();
+  for (const fileKey of missing) {
+    const blob = await getFile(project.id, fileKey);
+    if (blob) live.set(fileKey, blob);
+    else verified.set(`${project.id}/${fileKey}`, "");
+  }
+  const checkable = missing.filter((k) => live.has(k));
+  if (checkable.length !== 0) {
+    const matched = await verifyPhotosAgainstHead(project, checkable, live);
+    if (matched === null) return false; // some bytes differ from HEAD → commit
+    for (const [key, fp] of matched) verified.set(key, fp);
+  }
+  for (const [key, fp] of verified) writtenFingerprints.set(key, fp);
+  return true;
+}
+
+/** Verify the given referenced photos against the commit at HEAD and return
+ *  their session fingerprints — or null when any live bytes differ (or the
+ *  history is unreadable: assume changed, commit). Git blob oids ARE content
+ *  hashes, so the live side is hashed with the same git oid function and
+ *  compared against the tree's oids — no committed blobs are read back.
+ *  Each live blob is read exactly once, and the returned fingerprints seed
+ *  the session cache (they were computed from those very bytes). */
+async function verifyPhotosAgainstHead(
+  project: Project,
+  keys: string[],
+  liveBlobs: Map<string, Blob>,
+): Promise<Map<string, string> | null> {
   try {
     const fs = await getFs();
     const git = await getGit();
@@ -217,21 +283,23 @@ async function photosUnchangedSinceHead(project: Project): Promise<boolean> {
     try {
       tree = (await git.readTree({ fs, dir, oid: head, filepath: "photos" })).tree;
     } catch {
-      return referencedFileKeys(project).size === 0; // no photos committed yet
+      return keys.length === 0 ? new Map() : null; // no photos committed yet
     }
     const committed = new Map(tree.filter((e) => e.type === "blob").map((e) => [e.path, e.oid]));
-    for (const fileKey of referencedFileKeys(project)) {
+    const verified = new Map<string, string>();
+    for (const fileKey of keys) {
       const oid = committed.get(fileKey);
-      if (!oid) return false; // new file never committed
-      const live = await getFile(project.id, fileKey);
-      if (!live) return false;
-      const liveFp = await contentFingerprint(live);
-      const committedFp = contentFingerprintBytes((await git.readBlob({ fs, dir, oid })).blob);
-      if (liveFp !== committedFp) return false;
+      if (!oid) return null; // new file never committed
+      const blob = liveBlobs.get(fileKey);
+      if (!blob) return null;
+      const bytes = new Uint8Array(await blobToArrayBuffer(blob));
+      verified.set(`${project.id}/${fileKey}`, contentFingerprintBytes(bytes));
+      const { oid: liveOid } = await git.hashBlob({ object: bytes });
+      if (liveOid !== oid) return null; // replaced photo — commit the new bytes
     }
-    return true;
+    return verified;
   } catch {
-    return false; // unreadable history → assume changed, commit
+    return null; // unreadable history → assume changed, commit
   }
 }
 
@@ -289,6 +357,12 @@ async function commitAll(
       for (const fileKey of [photo.fileKey, photo.animation?.fileKey]) {
         if (!fileKey) continue;
         const key = `${project.id}/${fileKey}`;
+        // A session fingerprint means these bytes were read and hashed
+        // against the committed copy already; every byte-changing path
+        // (putFile, restore, rename — see onFileChange) drops the entry, so
+        // a replaced photo is always re-read. Caller-supplied files are
+        // authoritative — never skip those.
+        if (!force && !files?.has(fileKey) && writtenFingerprints.has(key)) continue;
         let blob = files?.get(fileKey);
         if (!blob) blob = await getFile(project.id, fileKey);
         if (!blob) continue;
@@ -353,6 +427,13 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
  *  rename, and saving the historical id would recreate the record/file
  *  mismatch the rename migration exists to prevent. */
 export async function restoreVersion(
+  projectId: string,
+  oid: string,
+): Promise<{ project: Project } | null> {
+  return withProjectLock(projectId, () => restoreVersionUnlocked(projectId, oid));
+}
+
+async function restoreVersionUnlocked(
   projectId: string,
   oid: string,
 ): Promise<{ project: Project } | null> {

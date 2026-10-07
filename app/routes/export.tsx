@@ -8,6 +8,7 @@ import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
 import { ensureRepo, isAutosaveCommit, listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { getAuthor } from "~/lib/author";
+import { useAutoVersion, AUTO_VERSION_DEBOUNCE_MS } from "~/lib/useAutoVersion";
 import { AuthorPromptModal } from "~/components/AuthorPromptModal";
 import { startJob, registerJobDownload } from "~/lib/jobs";
 import { openJobsPanel } from "~/components/JobsDock";
@@ -51,6 +52,9 @@ export default function ExportPage() {
   const [done, setDone] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [missing, setMissing] = useState<ExportIssue[]>([]);
+  // Autosave failures from any tab surface here too — this page is where a
+  // curator notices missing versions, so a dead autosave must be visible.
+  const versionError = useAutoVersion(projectId);
   // Compressing is a deck-file option (smaller photos, crops baked in).
   // Project files always ship original bytes — they carry the history.
   const [shrinkPreset, setShrinkPreset] = useState<ShrinkPreset | null>(null);
@@ -139,6 +143,11 @@ export default function ExportPage() {
       {saveError && (
         <p className="text-sm mb-4" role="alert" style={{ color: "var(--danger)" }} data-testid="export-page-error">
           {saveError}
+        </p>
+      )}
+      {versionError && (
+        <p className="text-sm mb-4" role="alert" style={{ color: "var(--danger)" }}>
+          {versionError}
         </p>
       )}
 
@@ -377,9 +386,9 @@ function VersionHistory({
     if (!confirm("Restore this version? Current changes stay in the history.")) return;
     setBusy(oid);
     try {
-      // Make the promise true: autosave only runs on the cards page, so
-      // edits made elsewhere may never have been committed. Checkpoint the
-      // current state first — and abort the restore if that fails.
+      // Checkpoint the current state first, so the "current changes stay
+      // in the history" promise holds even when a pending autosave hasn't
+      // landed yet — and abort the restore if that fails.
       await commitDeckVersion(project, undefined, `Before restoring ${oid.slice(0, 8)}`, { silent: false });
       // restoreVersion swaps files + record atomically; the returned project
       // keeps this deck's id even when the commit predates a rename.
@@ -402,7 +411,8 @@ function VersionHistory({
       <h2 className="font-semibold mb-1">Version history</h2>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
         Every deck is its own git repository in your browser. Changes commit automatically as you
-        work (a few seconds after you stop typing); save a named version before big changes. New
+        work — within about {Math.round(AUTO_VERSION_DEBOUNCE_MS / 1000)} seconds after you stop
+        editing, on any tab, and when you leave a page; save a named version before big changes. New
         versions are authored as{" "}
         <button
           type="button"

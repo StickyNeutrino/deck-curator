@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
+import userEvent from "@testing-library/user-event";
 import ReviewPage from "~/routes/review";
 import { saveProject, putFile } from "~/lib/store";
+import { ensureRepo, listVersions } from "~/lib/versioning";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import type { PhotoSlot } from "~/lib/types";
@@ -92,5 +94,29 @@ describe("review route", () => {
       return fronts[0];
     });
     expect(document.querySelector("[data-testid='card-front']")).toBe(firstFront);
+  });
+
+  it("lands a version for review-page edits when the page is left", async () => {
+    // Flag toggles used to save the record but never produce a git version
+    // (autosave was armed on the cards page only). Now the record save arms
+    // the shared autosave, and leaving the page flushes it.
+    const user = userEvent.setup();
+    const project = newProject("Flag autosave");
+    const species = makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" });
+    project.species.push(species);
+    await saveProject(project);
+    await ensureRepo(project);
+    const before = (await listVersions(project.id)).length;
+
+    renderReview(project.id);
+    const card = await screen.findByTestId(`review-card-${species.id}`);
+    await user.click(within(card).getByTestId(`flag-${species.id}`));
+
+    cleanup();
+    await waitFor(async () => {
+      expect((await listVersions(project.id)).length).toBeGreaterThan(before);
+    });
+    const messages = (await listVersions(project.id)).map((v) => v.message);
+    expect(messages[0]).toContain("Autosave");
   });
 });

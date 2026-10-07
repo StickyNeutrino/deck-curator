@@ -79,9 +79,9 @@ it("restoring through the UI flow preserves previously uncommitted edits", async
   const version = (await listVersions(p.id))[0];
   p.species[0].commonName = "Uncommitted change";
   await saveProject(p);
-  // The export page checkpoints the current state before restoring —
-  // autosave only runs on the cards page, so this is what makes the
-  // "current changes stay in the history" promise true.
+  // The export page checkpoints the current state before restoring, so the
+  // promise holds even when a pending autosave hasn't landed yet — and the
+  // named checkpoint commits regardless of the autosave dedupe.
   await commitDeckVersion(p, undefined, "Before restoring abc12345", { silent: false });
   const restored = await restoreVersion(p.id, version.oid);
   await commitDeckVersion(restored!.project, undefined, "Restored version");
@@ -105,6 +105,52 @@ it("preserves history through an exported archive imported as a new deck", async
   await saveProject(imported);
   await ensureRepo(imported);
   expect((await listVersions(imported.id)).some(v => v.message === "Named historical version")).toBe(true);
+});
+
+it("serializes concurrent git operations so both commits land", async () => {
+  const p = fixture();
+  await saveProject(p);
+  await ensureRepo(p);
+  const before = (await listVersions(p.id)).length;
+  // A navigation flush commit races the next page's ensureRepo in real
+  // sessions; two writers on one LightningFS dir would corrupt the index,
+  // so repo-touching operations queue per project.
+  await Promise.all([
+    commitDeckVersion({ ...p, name: `${p.name} A` }, undefined, "concurrent one"),
+    commitDeckVersion({ ...p, name: `${p.name} B` }, undefined, "concurrent two"),
+  ]);
+  const messages = (await listVersions(p.id)).map((v) => v.message);
+  expect(messages).toContain("concurrent one");
+  expect(messages).toContain("concurrent two");
+  expect(messages.length).toBe(before + 2);
+});
+
+it("does not recommit unchanged state on repeated autosave attempts", async () => {
+  const p = fixture();
+  await saveProject(p);
+  await ensureRepo(p);
+  const before = await listVersions(p.id);
+  expect(await commitDeckVersion(p)).toBeNull();
+  expect(await commitDeckVersion(p)).toBeNull();
+  expect(await listVersions(p.id)).toHaveLength(before.length);
+});
+
+it("commits photo bytes replaced under an existing key when metadata changes in the same session", async () => {
+  // Guards the session fingerprint cache in commitAll: entries are trusted
+  // (no live re-read) until a byte-changing write invalidates them, so a
+  // replaced photo must never be skipped because of a stale fingerprint.
+  const p = fixture();
+  p.species[0].photos.push({ id: "p", role: "main", fileKey: "still.jpg", credit: { observer: "A", license: "cc0" } });
+  await putFile(p.id, "still.jpg", new Blob(["old"]));
+  await ensureRepo(p); // commits "old" and caches its fingerprint
+  await putFile(p.id, "still.jpg", new Blob(["new"])); // same key, new bytes
+  p.species[0].commonName = "Renamed";
+  await saveProject(p);
+  expect(await commitDeckVersion(p)).not.toBeNull();
+  const fs = new FS("deck-curator-git");
+  const head = await git.resolveRef({ fs, dir: `/${p.id}`, ref: "HEAD" });
+  const { blob } = await git.readBlob({ fs, dir: `/${p.id}`, oid: head, filepath: "photos/still.jpg" });
+  expect(new TextDecoder().decode(blob)).toBe("new");
 });
 
 it("leaves live state untouched when the restore swap fails", async () => {

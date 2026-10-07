@@ -8,6 +8,7 @@ import { TagsManager } from "~/components/TagsManager";
 import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
 import { searchSettingsOf } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
+import { useAutoVersion } from "~/lib/useAutoVersion";
 import { listProjects, renameProject } from "~/lib/store";
 import { renameRepo } from "~/lib/versioning";
 
@@ -27,6 +28,8 @@ export default function InfoPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const { project, setProject, notFound, loadError, saveError, update } = useProjectDoc(projectId);
+  // Deck-info edits autosave to version history like any other tab.
+  const versionError = useAutoVersion(projectId);
 
   // The deck id is the store key for the record, the photo files, and the
   // git repo — editing it per keystroke would duplicate decks and break
@@ -98,6 +101,11 @@ export default function InfoPage() {
       {saveError && (
         <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
           {saveError}
+        </p>
+      )}
+      {versionError && (
+        <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }}>
+          {versionError}
         </p>
       )}
       <nav className="mb-4 text-sm">
