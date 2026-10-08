@@ -3,6 +3,29 @@ import { getProject, saveProject } from "./store";
 import { scheduleAutoVersion } from "./useAutoVersion";
 import type { Project } from "./types";
 
+/** `update` of each project page currently mounted, by project id. */
+const liveUpdaters = new Map<string, (mutate: (draft: Project) => void) => void>();
+
+/**
+ * Edit a deck from outside the page that owns it (background jobs). While the
+ * deck is open, the edit goes through its page so the page state and autosave
+ * stay in sync; otherwise the stored record is edited directly, so a job keeps
+ * landing its work after the curator navigates away.
+ */
+export async function mutateProject(projectId: string, mutate: (draft: Project) => void): Promise<void> {
+  const live = liveUpdaters.get(projectId);
+  if (live) {
+    live(mutate);
+    return;
+  }
+  const current = await getProject(projectId);
+  if (!current) return;
+  const draft = structuredClone(current);
+  mutate(draft);
+  scheduleAutoVersion(draft);
+  await saveProject(draft);
+}
+
 /**
  * Load a project by id and persist edits as they happen.
  *
@@ -54,6 +77,14 @@ export function useProjectDoc(projectId: string | undefined) {
       return draft;
     });
   }, []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    liveUpdaters.set(projectId, update);
+    return () => {
+      if (liveUpdaters.get(projectId) === update) liveUpdaters.delete(projectId);
+    };
+  }, [projectId, update]);
 
   useEffect(() => {
     if (!project || !dirtyRef.current) return;

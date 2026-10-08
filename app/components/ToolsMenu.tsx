@@ -4,6 +4,7 @@ import { enrichProject } from "~/lib/enrich";
 import { photoCap } from "~/lib/cardGeometry";
 import { fillMissingPhotos, labelNativeStatus, labelRarity, toolResultMerger, type ToolReport } from "~/lib/tools";
 import { startJob, useJobs } from "~/lib/jobs";
+import { mutateProject } from "~/lib/useProjectDoc";
 import { openJobsPanel } from "~/components/JobsDock";
 
 interface Tool {
@@ -50,11 +51,9 @@ const TOOLS: Tool[] = [
 
 export function ToolsMenu({
   project,
-  onChange,
   scopeIds,
 }: {
   project: Project;
-  onChange: (f: (d: Project) => void) => void;
   /** Selected species ids — empty means the tool applies to the whole deck. */
   scopeIds: string[];
 }) {
@@ -107,8 +106,12 @@ export function ToolsMenu({
 
   /** Merge, don't clobber: only fields the tool changed vs the snapshot are
    *  applied, so edits made during the run survive. */
+  // Jobs outlive this menu (and the page), so writes go through the deck's
+  // store-level path rather than this render's `onChange`.
+  const writeDeck = (f: (d: Project) => void) => mutateProject(project.id, f);
+
   const applyResult = (snapshot: Project, result: Project) => {
-    onChange(toolResultMerger(snapshot, result));
+    return writeDeck(toolResultMerger(snapshot, result));
   };
 
   const summaryOf = (report: ToolReport): string => {
@@ -134,7 +137,7 @@ export function ToolsMenu({
           (done, total, label) => h.progress(done, total, label),
           scope,
         );
-        applyResult(snapshot, result.project);
+        await applyResult(snapshot, result.project);
         const parts = [`enriched ${result.resolved} species`];
         if (result.sorted) parts.push(`sorted ${result.sorted} into categories`);
         if (result.unresolved.length) parts.push(`couldn't resolve: ${result.unresolved.slice(0, 3).join(", ")}`);
@@ -166,9 +169,9 @@ export function ToolsMenu({
           { ids: scope },
           { invasiveBorder },
           (done, total) => h.progress(done, total),
-          onChange,
+          writeDeck,
         );
-        applyResult(snapshot, next);
+        await applyResult(snapshot, next);
         return { message: summaryOf(report), conflicts: report.conflicts };
       },
     );
@@ -191,9 +194,9 @@ export function ToolsMenu({
           { ids: scope },
           { notableBorder },
           (done, total) => h.progress(done, total),
-          onChange,
+          writeDeck,
         );
-        applyResult(snapshot, next);
+        await applyResult(snapshot, next);
         return { message: summaryOf(report), conflicts: report.conflicts };
       },
     );
@@ -217,7 +220,7 @@ export function ToolsMenu({
           (done, total, label) => h.progress(done, total, label),
           h.signal,
         );
-        applyResult(snapshot, next);
+        await applyResult(snapshot, next);
         if (!report.considered) return "No cards are missing photos.";
         const parts = [`added photos to ${report.filled} of ${report.considered} cards`];
         if (report.noData) parts.push(`no CC photos found for ${report.noData}`);

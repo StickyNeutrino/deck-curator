@@ -12,6 +12,7 @@ import { slugify } from "~/lib/ids";
 import { LocationPicker } from "~/components/LocationPicker";
 import type { DeckLocation } from "~/lib/types";
 import { searchSettingsOf } from "~/lib/types";
+import { mutateProject } from "~/lib/useProjectDoc";
 
 /** iNat iconic_taxon_id → friendly filter names (ids verified against the
  *  API: 3 Aves, 40151 Mammalia, 26036 Reptilia, 20978 Amphibia, 47178
@@ -149,6 +150,14 @@ function photoIdsInDeck(entries: SpeciesEntry[]): Set<string> {
 }
 
 const RESULT_LIMITS = [10, 30, 50, 100, 200] as const;
+
+/** Append a finished card to a deck draft (category row first, if new). */
+function addEntryTo(d: Project, entry: SpeciesEntry): void {
+  if (!d.categories.some((c) => c.id === entry.category)) {
+    d.categories.push({ id: entry.category, label: labelForCategoryId(entry.category) });
+  }
+  d.species.push(entry);
+}
 
 export function InatTab({
   project,
@@ -460,12 +469,7 @@ export function InatTab({
   /** Land a finished card in the deck (category row first, if new). */
   const writeEntry = useCallback(
     (entry: SpeciesEntry) => {
-      onChange((d) => {
-        if (!d.categories.some((c) => c.id === entry.category)) {
-          d.categories.push({ id: entry.category, label: labelForCategoryId(entry.category) });
-        }
-        d.species.push(entry);
-      });
+      onChange((d) => addEntryTo(d, entry));
     },
     [onChange],
   );
@@ -591,7 +595,7 @@ export function InatTab({
             writes = writes.then(async () => {
               await download;
               if (h.signal.aborted) return; // cancelled — never land this card
-              writeEntry(card.entry);
+              await mutateProject(project.id, (d) => addEntryTo(d, card.entry));
               done++;
               added++;
               h.progress(done, total, r.common ?? r.name);
@@ -610,7 +614,7 @@ export function InatTab({
     setStatus(
       `Adding ${total} card${total === 1 ? "" : "s"} in the background — watch (and cancel) it in Jobs.`,
     );
-  }, [results, selected, cardsPerSpecies, cardsFor, fetchCard, downloadCardPhotos, writeEntry, project.id, project.name]);
+  }, [results, selected, cardsPerSpecies, cardsFor, fetchCard, downloadCardPhotos, project.id, project.name]);
 
   const toggleSelected = (id: number) => {
     setSelected((prev) => {

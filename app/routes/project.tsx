@@ -225,7 +225,7 @@ function SpeciesTable({
         <button className="btn-primary" data-testid="add-species" onClick={onAdd}>
           + Add species
         </button>
-        <ToolsMenu project={project} onChange={onChange} scopeIds={scopeIds} />
+        <ToolsMenu project={project} scopeIds={scopeIds} />
         <input
           className="field"
           style={{ maxWidth: 220 }}
