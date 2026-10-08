@@ -15,10 +15,19 @@
   --accent-soft: #e7efe8;
   --danger: #b3261e;
   --border: #d5d3cc;
+  /* Brand-colored checkboxes/radios in every browser instead of each
+     engine's slightly different default blue. */
+  accent-color: var(--accent);
 }
 
+/* The palette is fixed light, so pin the color scheme: native widgets
+   (select popups, checkboxes, autofill) must render light in every browser
+   even when the OS asks for dark. A dark color-scheme otherwise makes
+   Chromium draw select option lists dark with the control's dark text on
+   them — unreadable in Chrome while Firefox looks fine. */
 html {
   background: #f6f5f1;
+  color-scheme: light;
 }
 
 body {
