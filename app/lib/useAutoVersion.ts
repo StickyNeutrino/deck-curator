@@ -61,7 +61,8 @@ export function scheduleAutoVersion(project: Project, delayMs = AUTO_VERSION_DEB
   }, delayMs));
 }
 
-/** Commit any pending autosave now — used when a page is left or hidden.
+/** Commit any pending autosave now — used when a page is left, hidden, or
+ *  before a disruptive operation like a version restore.
  *  A no-op for projects with nothing pending. */
 export async function flushAutoVersion(projectId?: string): Promise<void> {
   const ids = projectId ? [projectId] : [...pending.keys()];
@@ -84,12 +85,32 @@ export async function flushAutoVersion(projectId?: string): Promise<void> {
       });
       // A failed silent commit reports oid null too — only emit "saved"
       // when nothing failed, or the banner would flash and clear itself.
-      if (!failed) emit({ type: "saved", projectId: id, oid });
+      if (!failed) {
+        emit({ type: "saved", projectId: id, oid });
+        return;
+      }
     } catch (err) {
       // Unreachable for silent commits; keep failures visible regardless.
+      failed = true;
       emit({ type: "failed", projectId: id, error: err });
     }
+    // The commit didn't land — keep the state pending so a later flush (the
+    // next edit anywhere, leaving the page, or the tab being hidden) retries
+    // it instead of quietly dropping it. A state scheduled since supersedes.
+    if (!pending.has(id)) pending.set(id, project);
   }));
+}
+
+/** Drop a project's pending autosave and cancel its timer — used before a
+ *  version restore, which commits the restored state itself and must not be
+ *  interleaved by a flush of the pre-restore state. */
+export function cancelAutoVersion(projectId: string): void {
+  pending.delete(projectId);
+  const timer = timers.get(projectId);
+  if (timer) {
+    clearTimeout(timer);
+    timers.delete(projectId);
+  }
 }
 
 /** Wire autosave into a page: surfaces autosave failures as a banner string,
@@ -126,11 +147,19 @@ export function useAutoVersion(
     const flush = (): void => {
       void flushAutoVersion(projectId);
     };
+    const onVisibility = (): void => {
+      // Hiding the tab usually precedes a real close, and async work still
+      // completes while hidden — flush here too, so the pagehide flush
+      // (whose work the unload can cut off) rarely has anything left to lose.
+      if (document.visibilityState === "hidden") flush();
+    };
     // pagehide covers tab close and backgrounding; the cleanup covers
     // navigating to another page within the app.
     window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
       void flushAutoVersion(projectId);
     };
   }, [projectId]);

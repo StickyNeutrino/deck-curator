@@ -8,7 +8,7 @@ import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
 import { ensureRepo, isAutosaveCommit, listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
 import { getAuthor } from "~/lib/author";
-import { useAutoVersion, AUTO_VERSION_DEBOUNCE_MS } from "~/lib/useAutoVersion";
+import { useAutoVersion, AUTO_VERSION_DEBOUNCE_MS, cancelAutoVersion } from "~/lib/useAutoVersion";
 import { AuthorPromptModal } from "~/components/AuthorPromptModal";
 import { startJob, registerJobDownload } from "~/lib/jobs";
 import { openJobsPanel } from "~/components/JobsDock";
@@ -386,6 +386,11 @@ function VersionHistory({
     if (!confirm("Restore this version? Current changes stay in the history.")) return;
     setBusy(oid);
     try {
+      // Drop any pending autosave first: a flush firing mid-restore would
+      // commit the pre-restore state alongside the restored photo files —
+      // an incoherent version in the history. The checkpoint below commits
+      // the current state explicitly, so nothing is lost by cancelling.
+      cancelAutoVersion(project.id);
       // Checkpoint the current state first, so the "current changes stay
       // in the history" promise holds even when a pending autosave hasn't
       // landed yet — and abort the restore if that fails.
@@ -395,6 +400,10 @@ function VersionHistory({
       const result = await restoreVersion(project.id, oid);
       if (result) {
         onRestored(result.project);
+        // An in-flight flush that started before the cancel can re-add the
+        // pre-restore state once its own commit lands — drop it again so
+        // the restored state is what history records next.
+        cancelAutoVersion(project.id);
         await commitDeckVersion(result.project, undefined, `Restored version ${oid.slice(0, 8)}`);
         await refresh();
         setStatus(`Restored ${oid.slice(0, 8)}.`);

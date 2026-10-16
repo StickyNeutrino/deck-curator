@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { renderHook } from "@testing-library/react";
 import {
   scheduleAutoVersion,
   flushAutoVersion,
   subscribeAutoVersion,
+  cancelAutoVersion,
+  useAutoVersion,
   type AutoVersionEvent,
 } from "~/lib/useAutoVersion";
 import { isAutosaveCommit, listVersions } from "~/lib/versioning";
@@ -150,6 +153,65 @@ describe("version autosave scheduler", () => {
     expect(failure).toMatchObject({ projectId: project.id, error: expect.anything() });
     // A failed commit must not also emit "saved" — the banner would clear itself.
     expect(events.some((e) => e.type === "saved")).toBe(false);
+  }, 30_000);
+
+  it("keeps a failed flush pending so a later flush can land it", async () => {
+    const project = fixture();
+    project.species[0].photos.push({
+      id: "p",
+      role: "main",
+      fileKey: "oak.jpg",
+      credit: { observer: "A", license: "cc0" },
+    });
+    await putFile(project.id, "oak.jpg", new Blob(["bytes"]));
+    await saveProject(project);
+    scheduleAutoVersion(project);
+
+    const spy = vi.spyOn(store, "getFile").mockRejectedValue(new Error("simulated store failure"));
+    await flushAutoVersion(project.id);
+    spy.mockRestore();
+
+    // The failed state is still pending: once the store works again, the
+    // same state commits on the next flush — leaving the page, hiding the
+    // tab, or the next edit — instead of being dropped until an edit.
+    const events: AutoVersionEvent[] = [];
+    const unsub = subscribeAutoVersion((e) => events.push(e));
+    await flushAutoVersion(project.id);
+    unsub();
+    expect(events.some((e) => e.type === "saved")).toBe(true);
+    expect(await autoVersions(project.id)).toHaveLength(1);
+  }, 30_000);
+
+  it("cancelAutoVersion drops the pending state and its timer", async () => {
+    const project = fixture();
+    await saveProject(project);
+    scheduleAutoVersion(project, 50);
+    cancelAutoVersion(project.id);
+
+    // The cancelled debounce window passes without a commit, and an
+    // afterwards flush has nothing to commit either.
+    await wait(80);
+    const events: AutoVersionEvent[] = [];
+    const unsub = subscribeAutoVersion((e) => events.push(e));
+    await flushAutoVersion(project.id);
+    unsub();
+    expect(events.filter((e) => e.projectId === project.id)).toHaveLength(0);
+    expect(await autoVersions(project.id)).toHaveLength(0);
+  }, 30_000);
+
+  it("flushes when the tab is hidden, before pagehide can lose the work", async () => {
+    const project = fixture();
+    await saveProject(project);
+    // A debounce far in the future: only the hidden-flush can land this.
+    scheduleAutoVersion(project, 60_000);
+
+    const { unmount } = renderHook(() => useAutoVersion(project.id));
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    delete (document as { visibilityState?: unknown }).visibilityState;
+
+    await untilSettled(async () => (await autoVersions(project.id)).length === 1);
+    unmount();
   }, 30_000);
 
   it("reports a landed commit as saved", async () => {
