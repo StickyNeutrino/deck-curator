@@ -6,6 +6,22 @@ import type { Project } from "./types";
 /** `update` of each project page currently mounted, by project id. */
 const liveUpdaters = new Map<string, (mutate: (draft: Project) => void) => void>();
 
+/** Serialize whole-record read-modify-write cycles per project. A background
+ *  job and the species editor's explicit save both read the record, change
+ *  it, and write it back — interleaved, one would silently overwrite the
+ *  other's changes. Only cycle-shaped writers need this: the page-driven
+ *  save effect always writes the newest state wholesale, and the live-updater
+ *  path funnels jobs through that state. Never nest: a locked cycle must not
+ *  start another one for the same project. */
+const recordQueues = new Map<string, Promise<unknown>>();
+
+export function withRecordLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const tail = (recordQueues.get(projectId) ?? Promise.resolve()).catch(() => undefined);
+  const run = tail.then(fn);
+  recordQueues.set(projectId, run.catch(() => undefined));
+  return run;
+}
+
 /**
  * Edit a deck from outside the page that owns it (background jobs). While the
  * deck is open, the edit goes through its page so the page state and autosave
@@ -18,12 +34,14 @@ export async function mutateProject(projectId: string, mutate: (draft: Project) 
     live(mutate);
     return;
   }
-  const current = await getProject(projectId);
-  if (!current) return;
-  const draft = structuredClone(current);
-  mutate(draft);
-  scheduleAutoVersion(draft);
-  await saveProject(draft);
+  await withRecordLock(projectId, async () => {
+    const current = await getProject(projectId);
+    if (!current) return;
+    const draft = structuredClone(current);
+    mutate(draft);
+    scheduleAutoVersion(draft);
+    await saveProject(draft);
+  });
 }
 
 /**

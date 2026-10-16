@@ -13,6 +13,7 @@ import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeomet
 import { BORDER_STYLES, searchSettingsOf, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
 import { scheduleAutoVersion, useAutoVersion } from "~/lib/useAutoVersion";
+import { withRecordLock } from "~/lib/useProjectDoc";
 import { CropModal, slotAspectFor } from "~/components/CropModal";
 import { FrameModal } from "~/components/FrameModal";
 import { CreditModal, UPLOAD_DEFAULT_CREDIT } from "~/components/CreditModal";
@@ -32,6 +33,11 @@ export default function SpeciesPage() {
   const [cropSlot, setCropSlot] = useState<{ slot: SpeciesEntry["photos"][number]; index: number } | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Files present when this editor opened. Anything that shows up while it
+  // sits here may belong to a background job whose record change hasn't
+  // landed yet — downloads run concurrently while record writes go in
+  // order — so cleanup (in persist) only ever deletes baseline files.
+  const baselineKeysRef = useRef<Set<string>>(new Set());
 
   // Where "Save & close" / "Cancel" should return to — e.g. the review page
   // with the "needs fixing" filter active. Falls back to the deck list.
@@ -49,6 +55,11 @@ export default function SpeciesPage() {
     void getProject(projectId)
       .then((p) => setProject(p ?? null))
       .catch((err) => setLoadError(`Couldn't load the deck: ${err instanceof Error ? err.message : err}`));
+    // If this read fails the baseline stays empty and cleanup deletes
+    // nothing — the safe direction.
+    void listFileKeys(projectId)
+      .then((keys) => { baselineKeysRef.current = keys; })
+      .catch(() => undefined);
   }, [projectId]);
 
   const entry = project?.species.find((s) => s.id === speciesId) ?? null;
@@ -87,42 +98,75 @@ export default function SpeciesPage() {
 
   const persist = useCallback(async (): Promise<Project | null> => {
     if (!draft) return null;
-    const next = structuredClone(project!);
-    const idx = next.species.findIndex((s) => s.id === draft.id);
-    if (idx >= 0) next.species[idx] = structuredClone(draft);
-    try {
-      await saveProject(next);
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-      return null;
-    }
-    // Garbage-collect blobs nothing references anymore (removed/replaced
-    // photos and clips). The deletion set keys off the snapshot that was
-    // JUST saved — the persisted record is the only truth about what's
-    // needed, so this can't race a concurrent save the way a side queue
-    // could. The live draft is protected too: an upload may have stored its
-    // bytes just before its slot landed in the draft.
-    try {
-      const keep = referencedFileKeys(next);
-      for (const p of draft.photos) {
-        if (p.fileKey) keep.add(p.fileKey);
-        if (p.animation?.fileKey) keep.add(p.animation.fileKey);
+    // Re-read the record instead of saving the page's snapshot: a background
+    // job can write the deck while this editor sits open (jobs outlive their
+    // page, and this editor registers no live updater), and a whole-record
+    // save from a stale snapshot would clobber the job's work — the cleanup
+    // below would then delete the very files the job just stored. Merging
+    // only this species entry into the CURRENT record keeps both writers'
+    // changes, and the lock keeps this read-modify-write cycle from
+    // interleaving with a job's.
+    return withRecordLock(projectId ?? "", async () => {
+      let current: Project | undefined;
+      try {
+        current = await getProject(projectId ?? "");
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : String(err));
+        return null;
       }
-      for (const key of await listFileKeys(projectId ?? "")) {
-        if (!keep.has(key)) await deleteFile(projectId ?? "", key);
+      if (!current) {
+        setSaveError("This deck no longer exists.");
+        return null;
       }
-    } catch (err) {
-      console.warn("Photo cleanup failed (files remain):", err);
-    }
-    setProject(next);
-    setSaved(true);
-    setSaveError(null);
-    // The species editor keeps its own draft and saves explicitly — arm the
-    // version autosave here so "Save" lands in git history like any edit.
-    // Leaving the page flushes whatever the debounce hasn't committed yet.
-    scheduleAutoVersion(next);
-    return next;
-  }, [draft, project, projectId]);
+      const next = structuredClone(current);
+      const idx = next.species.findIndex((s) => s.id === draft.id);
+      if (idx < 0) {
+        // The card was removed elsewhere while it was being edited —
+        // saving would silently discard the draft.
+        setSaveError("This card was removed from the deck — go back and reopen it.");
+        return null;
+      }
+      next.species[idx] = structuredClone(draft);
+      try {
+        await saveProject(next);
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+      // Garbage-collect blobs nothing references anymore (removed/replaced
+      // photos and clips). The keep set comes from the record just saved —
+      // the fresh one, so a job's landed photos are never orphans — plus the
+      // live draft: an upload may have stored its bytes just before its slot
+      // landed in the draft. Only baseline files are ever deleted: a file
+      // that appeared while this editor was open may belong to a concurrent
+      // job whose record change hasn't landed yet, and a later save's
+      // baseline picks it up if it really was a stray.
+      try {
+        const keep = referencedFileKeys(next);
+        for (const p of draft.photos) {
+          if (p.fileKey) keep.add(p.fileKey);
+          if (p.animation?.fileKey) keep.add(p.animation.fileKey);
+        }
+        const baseline = baselineKeysRef.current;
+        for (const key of await listFileKeys(projectId ?? "")) {
+          if (keep.has(key) || !baseline.has(key)) continue;
+          await deleteFile(projectId ?? "", key);
+        }
+        // This save's result is the next cleanup's baseline.
+        baselineKeysRef.current = await listFileKeys(projectId ?? "");
+      } catch (err) {
+        console.warn("Photo cleanup failed (files remain):", err);
+      }
+      setProject(next);
+      setSaved(true);
+      setSaveError(null);
+      // The species editor keeps its own draft and saves explicitly — arm the
+      // version autosave here so "Save" lands in git history like any edit.
+      // Leaving the page flushes whatever the debounce hasn't committed yet.
+      scheduleAutoVersion(next);
+      return next;
+    });
+  }, [draft, projectId]);
 
   // Flush + autosave-error banner wiring (must run before the early returns).
   const versionError = useAutoVersion(projectId);
@@ -505,8 +549,8 @@ function PhotosEditor({
   };
 
   /** Store one uploaded file (still or moving media) and return its slot.
-   *  Moving media lands as clip + captured display still; decode failures
-   *  clean up after themselves and return null. */
+   *  Moving media lands as clip + captured display still; decode and storage
+   *  failures clean up after themselves and return null. */
   const storeUpload = async (file: File, role: "main" | "secondary", credit: PhotoCredit): Promise<PhotoSlotLike | null> => {
     const base = slugify(species.commonName || species.sciName || "photo");
     // A unique suffix: two species can share a slug, and a position-derived
@@ -514,7 +558,14 @@ function PhotosEditor({
     const mediaKind = isMediaFile(file);
     if (!mediaKind) {
       const fileKey = `${base}-${role}-${uuid().slice(0, 6)}.jpg`;
-      await putFile(projectId, fileKey, file);
+      try {
+        await putFile(projectId, fileKey, file);
+      } catch (err) {
+        // A full quota or blocked storage aborts the upload — say so instead
+        // of failing silently while the editor keeps the photo in the draft.
+        alert(`Couldn't store ${file.name}: ${err instanceof Error ? err.message : err}`);
+        return null;
+      }
       return {
         id: `upload:${uuid()}`,
         role,
@@ -526,7 +577,12 @@ function PhotosEditor({
     // Moving media: store the clip, capture the first frame as the display
     // still, then let the curator pick a different frame.
     const clipKey = `${base}-anim-${uuid().slice(0, 6)}.${mediaKind === "gif" ? "gif" : "mp4"}`;
-    await putFile(projectId, clipKey, file);
+    try {
+      await putFile(projectId, clipKey, file);
+    } catch (err) {
+      alert(`Couldn't store ${file.name}: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
     let still: Blob;
     try {
       still =
@@ -537,7 +593,15 @@ function PhotosEditor({
       return null;
     }
     const posterKey = `${base}-frame-${uuid().slice(0, 6)}.jpg`;
-    await putFile(projectId, posterKey, still);
+    try {
+      await putFile(projectId, posterKey, still);
+    } catch (err) {
+      // The clip is stored but its display still isn't — drop the pair
+      // rather than leave a slot-less clip behind for cleanup to trip over.
+      try { await deleteFile(projectId, clipKey); } catch { /* GC at next save */ }
+      alert(`Couldn't store ${file.name}: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
     return {
       id: `upload:${uuid()}`,
       role,
