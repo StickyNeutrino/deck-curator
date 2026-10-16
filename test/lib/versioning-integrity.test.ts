@@ -153,6 +153,30 @@ it("commits photo bytes replaced under an existing key when metadata changes in 
   expect(new TextDecoder().decode(blob)).toBe("new");
 });
 
+it("commits photo bytes a failed attempt left uncommitted, even with unchanged metadata", async () => {
+  // A commit that fails after the photo files were staged must not leave
+  // the session believing those bytes are already committed. The poisoned
+  // cache would show up on the NEXT autosave: with unchanged metadata the
+  // dedupe check would decide there is nothing to commit, and the replaced
+  // bytes would wait for some unrelated edit before landing in history.
+  const p = fixture();
+  p.species[0].photos.push({ id: "p", role: "main", fileKey: "still.jpg", credit: { observer: "A", license: "cc0" } });
+  await putFile(p.id, "still.jpg", new Blob(["old"]));
+  await saveProject(p);
+  await ensureRepo(p); // commits "old"
+
+  await putFile(p.id, "still.jpg", new Blob(["new"])); // bytes change, metadata doesn't
+  const spy = vi.spyOn(git, "commit").mockRejectedValueOnce(new Error("simulated commit failure"));
+  expect(await commitDeckVersion(p)).toBeNull();
+  spy.mockRestore();
+
+  expect(await commitDeckVersion(p)).not.toBeNull();
+  const fs = new FS("deck-curator-git");
+  const head = await git.resolveRef({ fs, dir: `/${p.id}`, ref: "HEAD" });
+  const { blob } = await git.readBlob({ fs, dir: `/${p.id}`, oid: head, filepath: "photos/still.jpg" });
+  expect(new TextDecoder().decode(blob)).toBe("new");
+});
+
 it("leaves live state untouched when the restore swap fails", async () => {
   const p = fixture();
   p.species[0].photos = ["a.jpg", "b.jpg"].map((key, i) => ({ id: key, fileKey: key, role: i ? "secondary" : "main", credit: { observer: "A", license: "cc0" } }));

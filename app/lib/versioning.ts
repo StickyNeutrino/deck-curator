@@ -68,8 +68,24 @@ async function renameRepoUnlocked(oldId: string, newId: string): Promise<void> {
       else await fs.promises.writeFile(destFull, await fs.promises.readFile(srcFull));
     }
   };
-  await copyDir(from, to);
-  await removeDir(from);
+  // The copy must finish before the source is touched, and a partial copy
+  // must never sit at the new id looking like a repository — ensureRepo
+  // would treat a truncated repo as valid history. On copy failure the
+  // partial destination is removed and the original stays put.
+  try {
+    await copyDir(from, to);
+  } catch (err) {
+    try { await removeDir(to); } catch { /* best-effort cleanup */ }
+    throw err;
+  }
+  try {
+    await removeDir(from);
+  } catch (err) {
+    // The history already lives at the new id; a leftover copy under the
+    // old id is orphaned but harmless. Keep going so the caches still
+    // follow the move and the caller's "renamed" path stays true.
+    console.warn("Old repository could not be removed after rename:", err);
+  }
   const oldPrefix = `${oldId}/`;
   for (const [key, content] of [...writtenFingerprints]) {
     if (key.startsWith(oldPrefix)) {
@@ -112,6 +128,10 @@ onFileChange((projectId, fileKey) => {
     for (const key of [...writtenFingerprints.keys()]) {
       if (key.startsWith(prefix)) writtenFingerprints.delete(key);
     }
+    // A wholesale change (restore, rename, deck deletion) also invalidates
+    // the record-level dedupe: the next autosave must decide afresh rather
+    // than trust a fingerprint computed against the previous content.
+    lastFingerprints.delete(projectId);
   } else {
     writtenFingerprints.delete(`${projectId}/${fileKey}`);
   }
@@ -150,9 +170,21 @@ const lastFingerprints = new Map<string, string>();
  *  index and the ref update, so everything repo-touching waits its turn. */
 const projectQueues = new Map<string, Promise<unknown>>();
 
+/** The cross-tab half of that lock: LightningFS's IndexedDB backing store
+ *  is shared by every open tab, so the in-page queue alone can't stop two
+ *  tabs from interleaving git writes on the same repo. When the Web Locks
+ *  API is available, each queued operation also holds an exclusive lock
+ *  named for the project for its whole duration; environments without it
+ *  (and the tests) keep the in-page queue only. Never nest: a locked
+ *  operation must not call another locked one for the same project. */
+async function withCrossTabLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  if (typeof navigator === "undefined" || !navigator.locks) return fn();
+  return navigator.locks.request(`deck-curator/repo/${projectId}`, fn);
+}
+
 function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
   const tail = (projectQueues.get(projectId) ?? Promise.resolve()).catch(() => undefined);
-  const run = tail.then(fn);
+  const run = tail.then(() => withCrossTabLock(projectId, fn));
   projectQueues.set(projectId, run.catch(() => undefined));
   return run;
 }
@@ -352,11 +384,20 @@ async function commitAll(
   await writeFile(PROJECT_FILE, JSON.stringify(project, null, 2));
   await writeFile(MANIFEST_FILE, JSON.stringify(buildManifest(project), null, 2));
 
+  // Fingerprints of the photos written for THIS commit, held locally until
+  // the commit lands. Recording them in the session cache any earlier would
+  // let a failed git.commit poison the cache: with unchanged project
+  // metadata the next autosave's dedupe check would then decide there is
+  // nothing to commit, and the replaced bytes would wait for some unrelated
+  // edit before landing in history. Within one call the local map also
+  // dedupes a fileKey referenced by more than one species.
+  const written = new Map<string, string>();
   for (const species of project.species) {
     for (const photo of species.photos) {
       for (const fileKey of [photo.fileKey, photo.animation?.fileKey]) {
         if (!fileKey) continue;
         const key = `${project.id}/${fileKey}`;
+        if (written.has(key)) continue; // already stored earlier in this commit
         // A session fingerprint means these bytes were read and hashed
         // against the committed copy already; every byte-changing path
         // (putFile, restore, rename — see onFileChange) drops the entry, so
@@ -369,7 +410,7 @@ async function commitAll(
         const content = await contentFingerprint(blob);
         if (!force && writtenFingerprints.get(key) === content) continue; // unchanged photo
         await writeFile(`photos/${fileKey}`, new Uint8Array(await blobToArrayBuffer(blob)));
-        writtenFingerprints.set(key, content);
+        written.set(key, content);
       }
     }
   }
@@ -377,6 +418,10 @@ async function commitAll(
   // Authorship is read at commit time — a saved curator identity (or the
   // default, see lib/author) stamps every version as it lands.
   const oid = await git.commit({ fs, dir, message, author: getAuthor() });
+  // The commit landed: only now may the session cache treat these photos as
+  // committed. A failure above leaves the cache untouched, so the next
+  // autosave re-reads and re-writes everything this attempt stored.
+  for (const [key, content] of written) writtenFingerprints.set(key, content);
   lastFingerprints.set(project.id, fingerprint(project));
   return oid;
 }
