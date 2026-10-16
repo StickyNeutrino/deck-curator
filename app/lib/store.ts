@@ -57,9 +57,12 @@ function fileKey(projectId: string, key: string): string {
 }
 
 export async function saveProject(project: Project, at?: string): Promise<void> {
-  project.updatedAt = at ?? new Date().toISOString();
+  // Clone before stamping: callers pass live React state, and mutating its
+  // `updatedAt` here would change it without a re-render.
+  const record = structuredClone(project);
+  record.updatedAt = at ?? new Date().toISOString();
   const database = await db();
-  await database.put("projects", structuredClone(project));
+  await database.put("projects", record);
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
@@ -157,10 +160,14 @@ export async function restoreSnapshot(
 export async function deleteProject(id: string): Promise<void> {
   const database = await db();
   const keys = (await database.getAllKeys("files")) as string[];
-  await Promise.all([
-    database.delete("projects", id),
-    ...keys.filter((k) => k.startsWith(`${id}/`)).map((k) => database.delete("files", k)),
-  ]);
+  const doomed = keys.filter((k) => k.startsWith(`${id}/`));
+  // The record and its files go in one transaction, like rename/restore: a
+  // failure must not leave a half-deleted deck behind.
+  const tx = database.transaction(["projects", "files"], "readwrite");
+  tx.objectStore("projects").delete(id);
+  const files = tx.objectStore("files");
+  for (const k of doomed) files.delete(k);
+  await tx.done;
   dropCachedBlobs(`${id}/`);
   notifyFileChange(id, null);
 }

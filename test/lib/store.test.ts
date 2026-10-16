@@ -17,6 +17,16 @@ describe("project store", () => {
     expect(loaded!.species[0].commonName).toBe("Oak");
   });
 
+  it("does not mutate the record object it is given", async () => {
+    const project = newProject("Immutable");
+    const before = project.updatedAt;
+    await saveProject(project, "2026-01-01T00:00:00.000Z");
+    // Callers pass live React state; stamping the stored copy must not
+    // change it without a re-render.
+    expect(project.updatedAt).toBe(before);
+    expect((await getProject(project.id))!.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+
   it("lists projects with counts, newest first", async () => {
     const a = newProject("Alpha");
     const b = newProject("Beta");
