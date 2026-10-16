@@ -22,6 +22,11 @@ export function withRecordLock<T>(projectId: string, fn: () => Promise<T>): Prom
   return run;
 }
 
+/** Background retry pacing for a failed record save. Mutable config so the
+ *  tests can shorten the waits (they run on real timers — fake clocks stall
+ *  the IndexedDB queue). */
+export const saveRetry = { attempts: 3, delayMs: 4_000 };
+
 /**
  * Edit a deck from outside the page that owns it (background jobs). While the
  * deck is open, the edit goes through its page so the page state and autosave
@@ -64,6 +69,7 @@ export function useProjectDoc(projectId: string | undefined) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const dirtyRef = useRef(false);
+  const latestRef = useRef<Project | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -105,7 +111,9 @@ export function useProjectDoc(projectId: string | undefined) {
   }, [projectId, update]);
 
   useEffect(() => {
-    if (!project || !dirtyRef.current) return;
+    if (!project) return;
+    latestRef.current = project;
+    if (!dirtyRef.current) return;
     dirtyRef.current = false;
     // The git version autosave rides on every record save, from any tab:
     // arm (re-arm) the shared debounce with this state. It's armed before
@@ -113,15 +121,28 @@ export function useProjectDoc(projectId: string | undefined) {
     // safety net when the record save itself fails.
     scheduleAutoVersion(project);
     void (async () => {
-      try {
-        await saveProject(project);
-        setSaveError(null);
-      } catch (err) {
-        // A console line isn't enough for the curator — a silent autosave
-        // failure means their last edits exist only on this screen.
-        dirtyRef.current = true; // retry on the next edit
-        console.error("Autosave failed:", err);
-        setSaveError(`Couldn't save: ${err instanceof Error ? err.message : err}`);
+      // A failed save must not drop the last edit just because the curator
+      // closes the tab before editing again, so it is retried after a short
+      // pause, a bounded number of times. A retry stops the moment a newer
+      // edit exists — that edit's own effect run owns saving from there —
+      // and can never regress the store: IndexedDB serializes overlapping
+      // writes in issuance order, and the newest state is always issued
+      // before an older retry's.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await saveProject(project);
+          setSaveError(null);
+          return;
+        } catch (err) {
+          // A console line isn't enough for the curator — a silent autosave
+          // failure means their last edits exist only on this screen.
+          dirtyRef.current = true; // retry, or the next edit
+          console.error("Autosave failed:", err);
+          setSaveError(`Couldn't save: ${err instanceof Error ? err.message : err}`);
+        }
+        if (attempt >= saveRetry.attempts || latestRef.current !== project) return;
+        await new Promise((resolve) => setTimeout(resolve, saveRetry.delayMs));
+        if (latestRef.current !== project) return;
       }
     })();
   }, [project]);
