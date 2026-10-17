@@ -2,11 +2,11 @@ import { describe, it, expect } from "vitest";
 import git from "isomorphic-git";
 import FS from "@isomorphic-git/lightning-fs";
 import { unzipSync } from "fflate";
-import { commitDeckVersion, ensureRepo, listVersions, restoreVersion } from "~/lib/versioning";
+import { commitDeckVersion, ensureRepo, listVersions, renameRepo, restoreVersion } from "~/lib/versioning";
 import { saveAuthor } from "~/lib/author";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
-import { saveProject, putFile, getFile, getProject, withRecordLock } from "~/lib/store";
+import { saveProject, putFile, getFile, getProject, deleteProject, renameProject, withRecordLock } from "~/lib/store";
 import { exportProjectFile } from "~/lib/export";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
 
@@ -158,6 +158,37 @@ describe("git versioning", () => {
     const after = await getProject(project.id);
     expect(after?.species[0].commonName).toBe("Oak");
     expect(restored?.project.species[0].commonName).toBe("Oak");
+  }, 60000);
+
+  it("never resurrects a repository for a deck whose record is gone", async () => {
+    // A deck deleted (or renamed away) while a stale autosave flush still
+    // holds its state: the commit must skip, not re-init a fresh repository
+    // at the dead path — a later deck reusing the id would inherit the
+    // phantom commits as "existing history" and skip its initial commit.
+    const project = sample();
+    await saveProject(project); // record exists; no repo ever created
+    await deleteProject(project.id);
+    const oid = await commitDeckVersion(project, undefined, "stale flush");
+    expect(oid).toBeNull();
+    const fs = new FS("deck-curator-git");
+    await expect(fs.promises.stat(`/${project.id}/.git`)).rejects.toThrow();
+  }, 60000);
+
+  it("a stale flush after a rename does not resurrect the old repo path", async () => {
+    const project = sample();
+    await saveProject(project);
+    await ensureRepo(project);
+    const newId = `${project.id}-renamed`;
+    await renameProject(project.id, newId);
+    await renameRepo(project.id, newId);
+    // The pre-rename pending autosave flushes now, against the old state.
+    const oid = await commitDeckVersion(project, undefined, "stale flush");
+    expect(oid).toBeNull();
+    const fs = new FS("deck-curator-git");
+    await expect(fs.promises.stat(`/${project.id}/.git`)).rejects.toThrow();
+    // The moved history carries no such commit.
+    const messages = (await listVersions(newId)).map((v) => v.message);
+    expect(messages).not.toContain("stale flush");
   }, 60000);
 
   it("stamps commits with the curator identity, defaulting when none is set", async () => {

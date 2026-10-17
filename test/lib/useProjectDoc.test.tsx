@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useProjectDoc, saveRetry } from "~/lib/useProjectDoc";
-import { saveProject, getProject } from "~/lib/store";
+import { saveProject, getProject, renameProject } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 import * as store from "~/lib/store";
@@ -87,5 +87,32 @@ describe("record save retry", () => {
     const stored = await getProject(project.id);
     expect(stored!.species.map((s) => s.commonName)).toEqual(["Oak", "Pine"]);
     expect(result.current.saveError).toBeNull();
+  });
+
+  it("does not resurrect a deck whose record was renamed away", async () => {
+    const project = newProject("Vanishing");
+    await saveProject(project);
+    const realSave = store.saveProject;
+    const spy = vi.spyOn(store, "saveProject").mockImplementation((p, at) => realSave(p, at));
+
+    const { result } = renderHook(() => useProjectDoc(project.id));
+    await waitFor(() => expect(result.current.project).not.toBeNull());
+
+    // Another tab renames the deck while this page sits on the old id.
+    await renameProject(project.id, "vanishing-2");
+
+    act(() => {
+      result.current.update((d) => {
+        d.description = "edited after the rename";
+      });
+    });
+    // The save joins the record lock, re-checks the record, finds it gone,
+    // and skips — writing it back would re-create the old id as a duplicate
+    // deck. (Before the existence check, the save landed and resurrected
+    // the deck under its old id.)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(spy).not.toHaveBeenCalled();
+    expect(await getProject(project.id)).toBeUndefined();
+    expect(await getProject("vanishing-2")).toBeDefined();
   });
 });

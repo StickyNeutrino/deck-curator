@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot } from "~/lib/store";
+import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot, withRecordLock } from "~/lib/store";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
@@ -94,8 +94,7 @@ describe("project store", () => {
     await putFile(project.id, "photo-main.jpg", new Blob(["jpeg"]));
     await putFile("other", "keep.jpg", new Blob(["untouched"]));
 
-    const next = { ...structuredClone(project), id: "renamed-deck" };
-    await renameProject(project.id, next);
+    await renameProject(project.id, "renamed-deck");
 
     // The old record and its files are gone; the new ones are in place.
     expect(await getProject(project.id)).toBeUndefined();
@@ -115,11 +114,37 @@ describe("project store", () => {
     await saveProject(b);
     await putFile(a.id, "x.jpg", new Blob(["x"]));
 
-    await expect(renameProject(a.id, { ...structuredClone(a), id: b.id })).rejects.toThrow(/already uses/);
+    await expect(renameProject(a.id, b.id)).rejects.toThrow(/already uses/);
     // Nothing moved: both records and files are intact.
     expect(await getProject(a.id)).toBeDefined();
     expect(await getProject(b.id)).toBeDefined();
     expect(await getFile(a.id, "x.jpg")).toBeDefined();
+  });
+
+  it("a record write that overlaps a rename travels with the deck", async () => {
+    const project = newProject("Travels");
+    await saveProject(project);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // A background job's read-modify-write cycle starts first, then stalls
+    // before its write; the rename queues behind it.
+    const job = withRecordLock(project.id, async () => {
+      const current = await getProject(project.id);
+      const draft = structuredClone(current!);
+      draft.description = "job was here";
+      await gate;
+      await saveProject(draft);
+    });
+    const rename = renameProject(project.id, "travelling-deck");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await job;
+    await rename;
+    // The job's write landed before the move, so the moved record carries
+    // it — and the old id is gone, not resurrected by the job's write.
+    const moved = await getProject("travelling-deck");
+    expect(moved?.description).toBe("job was here");
+    expect(await getProject(project.id)).toBeUndefined();
   });
 
   it("keeps a warm in-memory cache across reads", async () => {
@@ -181,7 +206,7 @@ describe("project store", () => {
     await putFile(project.id, "a.jpg", new Blob(["a"]));
     await cachedGetFile(project.id, "a.jpg");
 
-    await renameProject(project.id, { ...structuredClone(project), id: "moved-deck" });
+    await renameProject(project.id, "moved-deck");
     expect(peekCachedFile(project.id, "a.jpg")).toBeUndefined();
     expect(peekCachedFile("moved-deck", "a.jpg")).toBeInstanceOf(Blob);
 

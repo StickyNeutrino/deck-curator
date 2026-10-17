@@ -8,8 +8,8 @@ import { TagsManager } from "~/components/TagsManager";
 import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
 import { searchSettingsOf } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
-import { useAutoVersion } from "~/lib/useAutoVersion";
-import { listProjects, renameProject } from "~/lib/store";
+import { useAutoVersion, cancelAutoVersion } from "~/lib/useAutoVersion";
+import { getProject, listProjects, renameProject } from "~/lib/store";
 import { renameRepo } from "~/lib/versioning";
 
 /**
@@ -56,14 +56,27 @@ export default function InfoPage() {
         return;
       }
       setRenaming(true);
-      const next = { ...project, id: newId };
-      await renameProject(project.id, next); // files + record move atomically
+      await renameProject(project.id, newId); // files + record move atomically
+      // A pending autosave flushing after the history moves would commit to
+      // the removed repo path, where the commit fallback would re-init a
+      // phantom repository under the dead id — one a future deck reusing
+      // the id would inherit as "existing history" and skip its initial
+      // commit for. (commitAll now also refuses to re-init a repo whose
+      // record is gone — this cancel keeps the doomed attempt from even
+      // starting.) Cancelled again after the move: an in-flight flush that
+      // started before the first cancel re-adds its state when its own
+      // commit lands — the same dance the restore flow does.
+      cancelAutoVersion(project.id);
       try {
         await renameRepo(project.id, newId); // the git history follows the deck
       } catch {
         setIdentityError("Deck renamed, but its version history could not be moved — new versions start from here.");
       }
-      setProject(next);
+      cancelAutoVersion(project.id);
+      // The stored record (not a page snapshot) is the truth after the move:
+      // a background job may have landed work during the rename, and the
+      // moved record carries it.
+      setProject((await getProject(newId)) ?? { ...project, id: newId });
       navigate(`/project/${newId}/info`, { replace: true });
     } catch (err) {
       setIdentityError(`Rename failed: ${err instanceof Error ? err.message : err}`);
@@ -123,6 +136,7 @@ export default function InfoPage() {
             value={project.deckLabel}
             aria-label="Deck label"
             data-testid="deck-label"
+            disabled={renaming}
             onChange={(e) => update((d) => { d.deckLabel = e.target.value; })}
           />
         </label>
@@ -158,6 +172,7 @@ export default function InfoPage() {
             placeholder="What does this deck cover?"
             value={project.description}
             aria-label="Deck description"
+            disabled={renaming}
             onChange={(e) => update((d) => { d.description = e.target.value; })}
           />
         </label>

@@ -2,7 +2,7 @@ import type { Project } from "./types";
 import { migrateProject, referencedFileKeys } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
-import { getFile, restoreSnapshot, onFileChange, withRecordLock } from "./store";
+import { getFile, getProject, restoreSnapshot, onFileChange, withRecordLock } from "./store";
 import { getAuthor } from "./author";
 import "./polyfills";
 
@@ -367,6 +367,14 @@ async function commitAll(
     try {
       await fs.promises.stat(`${dir}/.git`);
     } catch {
+      // No repo here. That's expected for a deck that never committed — but
+      // it's also what a rename (history moved away) or a deck deletion
+      // leaves behind. Re-initializing blindly would resurrect a fresh
+      // repository at a dead path, and a later deck reusing the id would
+      // treat the phantom commits as existing history and skip its own
+      // initial commit. Only init when the deck still exists under this id.
+      const stored = await getProject(project.id).catch(() => undefined);
+      if (!stored) return null;
       await git.init({ fs, dir });
     }
   }

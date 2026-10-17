@@ -24,7 +24,7 @@ it("retains the active deck id when restoring a commit made before a rename", as
   await ensureRepo(p);
   const version = (await listVersions(p.id))[0];
   const renamed = { ...p, id: `${p.id}-new` };
-  await renameProject(p.id, renamed);
+  await renameProject(p.id, renamed.id);
   await renameRepo(p.id, renamed.id);
   const restored = await restoreVersion(renamed.id, version.oid);
   expect(restored!.project.id).toBe(renamed.id);

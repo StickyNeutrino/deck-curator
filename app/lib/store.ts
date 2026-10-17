@@ -95,54 +95,68 @@ export async function getProject(id: string): Promise<Project | undefined> {
  *  project record — in one transaction, so a failure can't leave the files
  *  under one id and the record under the other. The deck's git repository is
  *  the caller's concern (versioning.renameRepo); the new id must not already
- *  be taken (the callers check). */
-export async function renameProject(oldId: string, next: Project): Promise<void> {
-  if (oldId === next.id) {
-    await saveProject(next);
-    return;
-  }
+ *  be taken (checked again inside).
+ *
+ *  The move takes the record lock and re-reads the record inside the
+ *  transaction: a background job or page save whose read-modify-write cycle
+ *  overlaps the rename then writes before the move (its work travels with
+ *  the deck) instead of resurrecting the old id afterwards as a duplicate. */
+export async function renameProject(oldId: string, newId: string): Promise<void> {
+  if (oldId === newId) return;
   const database = await db();
-  const tx = database.transaction(["projects", "files"], "readwrite");
-  const projects = tx.objectStore("projects");
-  const files = tx.objectStore("files");
-  // Enforce uniqueness INSIDE the transaction — a concurrent tab (or a
-  // stale caller check) could have created the target id meanwhile, and a
-  // bare put would overwrite that deck.
-  const clash = await projects.get(next.id);
-  if (clash != null) {
-    tx.abort();
-    await tx.done.catch(() => undefined); // the expected AbortError, not ours to propagate
-    throw new Error(`Another deck already uses the id “${next.id}”.`);
-  }
-  const keys = (await files.getAllKeys()) as string[];
-  const moving = keys.filter((k) => k.startsWith(`${oldId}/`));
-  const buffers = (await Promise.all(moving.map((k) => files.get(k)))) as Array<ArrayBuffer | undefined>;
-  for (let i = 0; i < moving.length; i++) {
-    const buffer = buffers[i];
-    if (buffer == null) continue;
-    files.put(buffer, `${next.id}/${moving[i].slice(oldId.length + 1)}`);
-    files.delete(moving[i]);
-  }
-  projects.delete(oldId);
-  projects.put(structuredClone(next));
-  await tx.done;
-  // Keep any cached blobs warm under the new prefix.
-  if (blobCache.size > 0) {
-    const moved = new Map<string, Blob>();
-    for (const [cachedKey, blob] of blobCache) {
-      moved.set(
-        cachedKey.startsWith(`${oldId}/`)
-          ? `${next.id}/${cachedKey.slice(oldId.length + 1)}`
-          : cachedKey,
-        blob,
-      );
+  await withRecordLock(oldId, async () => {
+    const tx = database.transaction(["projects", "files"], "readwrite");
+    const projects = tx.objectStore("projects");
+    const files = tx.objectStore("files");
+    // Enforce uniqueness INSIDE the transaction — a concurrent tab (or a
+    // stale caller check) could have created the target id meanwhile, and a
+    // bare put would overwrite that deck.
+    const clash = await projects.get(newId);
+    if (clash != null) {
+      tx.abort();
+      await tx.done.catch(() => undefined); // the expected AbortError, not ours to propagate
+      throw new Error(`Another deck already uses the id “${newId}”.`);
     }
-    blobCache.clear();
-    for (const [cachedKey, blob] of moved) blobCache.set(cachedKey, blob);
-  }
-  // Every file moved between prefixes — invalidate both sides' caches.
-  notifyFileChange(oldId, null);
-  notifyFileChange(next.id, null);
+    // Read the record to move inside the transaction: whatever writers
+    // landed before it is what travels to the new id — not a caller's
+    // earlier snapshot.
+    const current = (await projects.get(oldId)) as Project | undefined;
+    if (current == null) {
+      tx.abort();
+      await tx.done.catch(() => undefined);
+      throw new Error(`No deck “${oldId}” to rename.`);
+    }
+    const moved: Project = { ...structuredClone(current), id: newId };
+    const keys = (await files.getAllKeys()) as string[];
+    const moving = keys.filter((k) => k.startsWith(`${oldId}/`));
+    const buffers = (await Promise.all(moving.map((k) => files.get(k)))) as Array<ArrayBuffer | undefined>;
+    for (let i = 0; i < moving.length; i++) {
+      const buffer = buffers[i];
+      if (buffer == null) continue;
+      files.put(buffer, `${newId}/${moving[i].slice(oldId.length + 1)}`);
+      files.delete(moving[i]);
+    }
+    projects.delete(oldId);
+    projects.put(moved);
+    await tx.done;
+    // Keep any cached blobs warm under the new prefix.
+    if (blobCache.size > 0) {
+      const movedBlobs = new Map<string, Blob>();
+      for (const [cachedKey, blob] of blobCache) {
+        movedBlobs.set(
+          cachedKey.startsWith(`${oldId}/`)
+            ? `${newId}/${cachedKey.slice(oldId.length + 1)}`
+            : cachedKey,
+          blob,
+        );
+      }
+      blobCache.clear();
+      for (const [cachedKey, blob] of movedBlobs) blobCache.set(cachedKey, blob);
+    }
+    // Every file moved between prefixes — invalidate both sides' caches.
+    notifyFileChange(oldId, null);
+    notifyFileChange(newId, null);
+  });
 }
 
 /** Atomically replace a project's files and record — used by version

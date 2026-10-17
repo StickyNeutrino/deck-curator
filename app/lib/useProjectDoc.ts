@@ -118,8 +118,20 @@ export function useProjectDoc(projectId: string | undefined) {
       // before an older retry's.
       for (let attempt = 1; ; attempt++) {
         try {
-          await saveProject(project);
-          setSaveError(null);
+          // The save joins the record lock and re-checks the record's
+          // existence first: a rename that completed while this state sat
+          // unsaved has moved the record — writing it back under the old id
+          // would resurrect it as a duplicate deck. (A deletion is skipped
+          // the same way.)
+          let landed = true;
+          await withRecordLock(project.id, async () => {
+            if (!(await getProject(project.id))) {
+              landed = false;
+              return;
+            }
+            await saveProject(project);
+          });
+          if (landed) setSaveError(null);
           return;
         } catch (err) {
           // A console line isn't enough for the curator — a silent autosave
