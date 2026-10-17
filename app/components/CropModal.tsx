@@ -44,6 +44,7 @@ export function CropModal({
   const [url, setUrl] = useState<string | null>(null);
   const [imageAspect, setImageAspect] = useState<number | null>(null);
   const [crop, setCrop] = useState<CropRect | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
 
@@ -51,13 +52,25 @@ export function CropModal({
     let objectUrl: string | null = null;
     let cancelled = false;
     void cachedGetFile(projectId, fileKey).then((blob) => {
-      if (cancelled || !blob) return;
+      if (cancelled) return;
+      if (!blob) {
+        // A missing file must not leave the modal in "Loading image…"
+        // forever with a Done button that would silently reset the crop.
+        setLoadError("This photo's file is missing from the deck.");
+        return;
+      }
       objectUrl = URL.createObjectURL(blob);
       const img = new Image();
       img.onload = () => {
         if (cancelled) return;
         setImageAspect(img.naturalWidth / img.naturalHeight);
         setUrl(objectUrl);
+      };
+      // A corrupt/undecodable image never fires onload — surface it instead
+      // of spinning forever.
+      img.onerror = () => {
+        if (cancelled) return;
+        setLoadError("This image couldn't be displayed — the file may be corrupt.");
       };
       img.src = objectUrl;
     });
@@ -208,6 +221,10 @@ export function CropModal({
               ))}
             </div>
           </div>
+        ) : loadError ? (
+          <div className="h-48 flex items-center justify-center text-sm px-6 text-center" role="alert" style={{ color: "var(--danger)" }}>
+            {loadError}
+          </div>
         ) : (
           <div className="h-48 flex items-center justify-center text-sm" style={{ color: "var(--muted)" }}>
             Loading image…
@@ -220,6 +237,7 @@ export function CropModal({
               onSave(crop ?? undefined);
               onClose();
             }}
+            disabled={!crop}
             data-testid="crop-save"
           >
             Done
