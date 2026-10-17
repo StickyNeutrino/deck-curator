@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot, withRecordLock, onProjectChange } from "~/lib/store";
+import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot, withRecordLock, onProjectChange, blobCacheLimits, clearBlobCacheForTests } from "~/lib/store";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
@@ -234,6 +234,36 @@ describe("project store", () => {
     expect(peekCachedFile(project.id, "photo-299.jpg")).toBeInstanceOf(Blob);
     expect(peekCachedFile(project.id, "photo-0.jpg")).toBeUndefined();
     expect((await listFiles(project.id)).size).toBe(300);
+  });
+
+  it("evicts by bytes too, so a few clips cannot hoard the cache", async () => {
+    const project = newProject("Bytes");
+    await saveProject(project);
+    // Byte accounting is shared module state — start from a known empty
+    // cache so the tiny budget below measures only this test's entries.
+    clearBlobCacheForTests();
+    const { count, bytes } = blobCacheLimits;
+    blobCacheLimits.bytes = 20; // tiny budget for the test
+    try {
+      await putFile(project.id, "a.jpg", new Blob(["0123456789"])); // 10 bytes
+      await putFile(project.id, "b.jpg", new Blob(["0123456789"])); // 20 — at the cap
+      expect(peekCachedFile(project.id, "a.jpg")).toBeInstanceOf(Blob);
+      await putFile(project.id, "c.jpg", new Blob(["0123456789"])); // 30 — over
+      expect(peekCachedFile(project.id, "a.jpg")).toBeUndefined();
+      expect(peekCachedFile(project.id, "b.jpg")).toBeInstanceOf(Blob);
+      expect(peekCachedFile(project.id, "c.jpg")).toBeInstanceOf(Blob);
+
+      // An entry larger than the whole budget still stays cached — it is
+      // the one about to be re-read, and one oversized clip must not
+      // disable the cache for the photos that follow it.
+      await putFile(project.id, "big.mp4", new Blob(["x".repeat(50)], { type: "video/mp4" }));
+      expect(peekCachedFile(project.id, "big.mp4")).toBeInstanceOf(Blob);
+      expect(peekCachedFile(project.id, "b.jpg")).toBeUndefined();
+      expect(peekCachedFile(project.id, "c.jpg")).toBeUndefined();
+    } finally {
+      blobCacheLimits.count = count;
+      blobCacheLimits.bytes = bytes;
+    }
   });
 
   it("moves cached blobs with a project rename and drops them on delete", async () => {

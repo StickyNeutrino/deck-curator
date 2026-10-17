@@ -156,7 +156,11 @@ export async function renameProject(oldId: string, newId: string): Promise<void>
         }
       }
       blobCache.clear();
-      for (const [cachedKey, blob] of movedBlobs) blobCache.set(cachedKey, blob);
+      cachedBytes = 0;
+      for (const [cachedKey, blob] of movedBlobs) {
+        blobCache.set(cachedKey, blob);
+        cachedBytes += blob.size;
+      }
     }
     // Every file moved between prefixes — invalidate both sides' caches.
     notifyFileChange(oldId, null);
@@ -338,9 +342,13 @@ function notifyProjectChange(projectId: string): void {
 // memory (bounded, LRU-style) makes the review page open as if the cards
 // were just created — and every write path above refreshes or drops entries,
 // so a re-import, overwrite, or version restore can never serve stale bytes.
+// The bounds are count AND approximate bytes: clips and GIFs ride in the
+// same cache as stills, and 250 retained videos would pin gigabytes.
 
-const BLOB_CACHE_LIMIT = 250;
+/** Mutable so tests can shrink the bounds. */
+export const blobCacheLimits = { count: 250, bytes: 64 * 1024 * 1024 };
 const blobCache = new Map<string, Blob>(); // key: `${projectId}/${fileKey}`
+let cachedBytes = 0;
 // Write generation per cached key. A cache fill's IndexedDB read and a
 // concurrent write are separate transactions: when the read wins the race
 // it returns the OLD bytes, and remembering them unconditionally would
@@ -355,10 +363,21 @@ function bumpBlobGeneration(cachedKey: string): void {
 
 function rememberBlob(cachedKey: string, blob: Blob): void {
   // Re-insert so the entry counts as most recently used for eviction.
+  const previous = blobCache.get(cachedKey);
+  if (previous) cachedBytes -= previous.size;
   blobCache.delete(cachedKey);
   blobCache.set(cachedKey, blob);
-  while (blobCache.size > BLOB_CACHE_LIMIT) {
-    blobCache.delete(blobCache.keys().next().value!);
+  cachedBytes += blob.size;
+  // Evict oldest-first until both bounds hold. The newest entry always
+  // stays: it is the one about to be re-read, and one oversized clip must
+  // not disable the cache for every smaller photo.
+  while (
+    blobCache.size > 1 &&
+    (blobCache.size > blobCacheLimits.count || cachedBytes > blobCacheLimits.bytes)
+  ) {
+    const oldest = blobCache.keys().next().value!;
+    cachedBytes -= blobCache.get(oldest)!.size;
+    blobCache.delete(oldest);
   }
 }
 
@@ -366,6 +385,7 @@ function dropCachedBlobs(prefix: string): void {
   for (const cachedKey of Array.from(blobCache.keys())) {
     if (cachedKey.startsWith(prefix)) {
       bumpBlobGeneration(cachedKey);
+      cachedBytes -= blobCache.get(cachedKey)!.size;
       blobCache.delete(cachedKey);
     }
   }
@@ -374,6 +394,15 @@ function dropCachedBlobs(prefix: string): void {
 /** Synchronous cache check — a warm photo can render without waiting a tick. */
 export function peekCachedFile(projectId: string, key: string): Blob | undefined {
   return blobCache.get(fileKey(projectId, key));
+}
+
+/** Test helper: drop every warm blob and reset the byte accounting. The
+ *  cache is shared module state (one per test file's worker), so byte-budget
+ *  tests start from a known empty state instead of a prior test's leftovers. */
+export function clearBlobCacheForTests(): void {
+  blobCache.clear();
+  blobGenerations.clear();
+  cachedBytes = 0;
 }
 
 /** getFile that prefers the in-memory cache and fills it on a miss. */
