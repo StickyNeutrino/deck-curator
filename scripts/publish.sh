@@ -10,7 +10,15 @@ IMAGE=oci.smeago.com:5000/deck-curator
 # CI gate first: the full suite runs in a throwaway container (see ci.sh).
 # A red run aborts here — nothing reaches the registry, and the cluster
 # keeps running whatever image it already had.
-"$(dirname "$0")/ci.sh"
+#
+# SKIP_CI exists for emergencies: a broken suite should not hold a hotfix
+# hostage. Set it to any non-empty value to deploy without the gate. The
+# bypass is loud so a skipped gate is visible in the deploy log.
+if [ -n "${SKIP_CI:-}" ]; then
+  echo "SKIP_CI is set — deploying WITHOUT the test gate." >&2
+else
+  "$(dirname "$0")/ci.sh"
+fi
 
 docker build . -t "$IMAGE"
 docker push "$IMAGE"

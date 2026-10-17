@@ -9,7 +9,15 @@ IMAGE=oci.smeago.com:5000/test-deck-curator
 
 # CI gate first, same as the production publish: the testing environment
 # exists to catch problems, not to run the suite for us.
-"$(dirname "$0")/ci.sh"
+#
+# SKIP_CI exists for emergencies: a broken suite should not hold a hotfix
+# hostage. Set it to any non-empty value to deploy without the gate. The
+# bypass is loud so a skipped gate is visible in the deploy log.
+if [ -n "${SKIP_CI:-}" ]; then
+  echo "SKIP_CI is set — deploying WITHOUT the test gate." >&2
+else
+  "$(dirname "$0")/ci.sh"
+fi
 
 docker build . -t "$IMAGE"
 docker push "$IMAGE"
