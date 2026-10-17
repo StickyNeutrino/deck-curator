@@ -29,8 +29,11 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
-          runAsUser: 101
-          runAsGroup: 101
+          # Matches the image's `node` user (uid 1000) — see the Dockerfile.
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
           capabilities:
             drop:
             - ALL
