@@ -231,6 +231,16 @@ export async function inatGet<T>(
   throw lastErr;
 }
 
+/** iNat answers with `{ results: [...] }`; a 2xx body that isn't shaped that
+ *  way (a proxy interstitial, a truncated or future API response) must not
+ *  crash a caller with a TypeError deep inside a loop. Missing or malformed
+ *  results read as empty — the search finds nothing, the tool reports no
+ *  records, and the UI stays usable. */
+function resultsOf<T>(body: unknown): T[] {
+  const results = (body as { results?: unknown } | null | undefined)?.results;
+  return Array.isArray(results) ? (results as T[]) : [];
+}
+
 export async function autocompleteTaxon(q: string, signal?: AbortSignal): Promise<InatTaxon[]> {
   // Autocomplete lookups are never cached: users type as they think, and
   // every ≥3-character prefix would otherwise become a permanent cache
@@ -241,12 +251,12 @@ export async function autocompleteTaxon(q: string, signal?: AbortSignal): Promis
     signal,
     { cache: false },
   );
-  return json.results;
+  return resultsOf<InatTaxon>(json);
 }
 
 export async function taxonDetail(id: number): Promise<InatTaxon | undefined> {
   const json = await inatGet<{ results: InatTaxon[] }>(`taxa/${id}`);
-  return json.results[0];
+  return resultsOf<InatTaxon>(json)[0];
 }
 
 export interface ObservationQuery {
@@ -277,7 +287,7 @@ export async function observations(q: ObservationQuery, signal?: AbortSignal): P
     place_id: q.placeId,
     quality_grade: q.qualityGrade && q.qualityGrade !== "any" ? q.qualityGrade : undefined,
   }, signal);
-  return json.results;
+  return resultsOf<InatObservation>(json);
 }
 
 export interface InatPlace {
@@ -291,7 +301,7 @@ export interface InatPlace {
 
 export async function placesAutocomplete(q: string): Promise<InatPlace[]> {
   const json = await inatGet<{ results: InatPlace[] }>("places/autocomplete", { q, per_page: 10 });
-  return json.results;
+  return resultsOf<InatPlace>(json);
 }
 
 /**
@@ -312,7 +322,11 @@ export async function nearbyPlaces(center: { lat: number; lng: number; radiusKm?
     swlng: center.lng - dLng,
     per_page: 20,
   });
-  return [...(json.results.standard ?? []), ...(json.results.community ?? [])];
+  const results = (json as { results?: { standard?: unknown; community?: unknown } } | null | undefined)?.results;
+  return [
+    ...(Array.isArray(results?.standard) ? (results!.standard as InatPlace[]) : []),
+    ...(Array.isArray(results?.community) ? (results!.community as InatPlace[]) : []),
+  ];
 }
 
 /**
@@ -339,7 +353,7 @@ export async function taxaRecords(
     const json = await inatGet<{ results: InatTaxon[] }>(`taxa/${chunk.join(",")}`, {
       place_id: placeId,
     }, signal);
-    for (const t of json.results) {
+    for (const t of resultsOf<InatTaxon>(json)) {
       out.set(t.id, t);
     }
   }
