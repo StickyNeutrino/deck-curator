@@ -95,6 +95,48 @@ describe("deck archive import", () => {
     await expect(importDeckArchive(zip)).rejects.toThrow(/manifest\.json/);
   });
 
+  it("gives repeated manifest files distinct slot ids and stores each", async () => {
+    // A manifest (hand-written or third-party) can reference the same photo
+    // file twice within one card. Slot ids must stay distinct — React keys
+    // slot lists by id — while both slots still resolve the file's bytes.
+    const duplicated = {
+      ...manifest,
+      categories: [
+        {
+          id: "plants",
+          label: "🌿 Plants",
+          cards: [
+            {
+              name: "Oak",
+              commonName: "Oak",
+              layout: "photo-trio",
+              photos: [
+                { file: "photos/dup.jpg", role: "main", credit: { observer: "a", license: "cc0" } },
+                { file: "photos/dup.jpg", role: "secondary", credit: { observer: "a", license: "cc0" } },
+                { file: "photos/dup.jpg", role: "secondary", credit: { observer: "a", license: "cc0" } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const { species } = speciesFromManifest(duplicated as any);
+    const ids = species[0].photos.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    const zip = zipSync({
+      "manifest.json": strToU8(JSON.stringify(duplicated)),
+      "photos/dup.jpg": strToU8("shared-bytes"),
+    });
+    const file = new File([zip as unknown as BlobPart], "dup.zip", { type: "application/zip" });
+    const project = await importDeckArchive(file);
+    const stored = project.species[0].photos.map((p) => p.fileKey);
+    expect(new Set(stored).size).toBe(stored.length);
+    for (const key of stored) {
+      expect(await getFile(project.id, key)).toBeInstanceOf(Blob);
+    }
+  });
+
   it("uniquifies the deck id when an existing deck already uses it", async () => {
     // A hermetic manifest id — other tests in this file store files under
     // "round-trip", so the collision target must be its own id.

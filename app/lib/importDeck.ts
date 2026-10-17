@@ -67,18 +67,29 @@ interface Manifest {
 const BORDER_IDS: BorderStyle[] = ["none", "invasive", "caution", "rare", "notable"];
 
 /** Manifest → species mapping (pure, testable). Photo fileKeys are left
- *  empty — the archive importer fills them when it stores each blob. */
+ *  empty — the archive importer fills them when it stores each blob. Slot
+ *  ids carry the manifest file (the archive importer parses it back out)
+ *  plus a `#n` suffix when one card repeats a file — React keys slot lists
+ *  by id, and the light-deck exporter maps remote URLs by id, so duplicates
+ *  would merge distinct slots. */
 export function speciesFromManifest(manifest: Manifest): {
   species: SpeciesEntry[];
   categories: Array<{ id: string; label: string }>;
 } {
   const categories = (manifest.categories ?? []).map((c) => ({ id: c.id, label: c.label }));
   const species: SpeciesEntry[] = [];
+  const usedSlotIds = new Set<string>();
+  const uniqueSlotId = (manifestFile: string): string => {
+    let id = `import:${manifestFile}`;
+    for (let n = 2; usedSlotIds.has(id); n++) id = `import:${manifestFile}#${n}`;
+    usedSlotIds.add(id);
+    return id;
+  };
   for (const category of manifest.categories ?? []) {
     for (const card of category.cards) {
       const photos: PhotoSlot[] = (card.photos ?? []).map((photo) => {
         const slot: PhotoSlot = {
-          id: `import:${photo.file}`,
+          id: uniqueSlotId(photo.file),
           role: photo.role === "secondary" ? "secondary" : "main",
           credit: {
             observer: photo.credit?.observer ?? "unknown",
@@ -204,7 +215,9 @@ export async function importDeckArchive(
 
   for (const entry of species) {
     for (const slot of entry.photos) {
-      const manifestFile = slot.id.slice("import:".length);
+      // Slot ids deduplicated with a `#n` suffix (one card referencing the
+      // same file twice) — strip it to find the archive entry.
+      const manifestFile = slot.id.slice("import:".length).replace(/#\d+$/, "");
       const raw = entries[manifestFile] ?? entries[decode(manifestFile)];
       const base = manifestFile.split("/").pop() ?? "photo.jpg";
       let fileKey = base;
