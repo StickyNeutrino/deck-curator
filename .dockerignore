@@ -13,4 +13,3 @@ k8s
 scripts
 test
 playwright.config.ts
-tmp-visual.mjs
