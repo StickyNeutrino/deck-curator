@@ -8,4 +8,9 @@ README.md
 /coverage
 /test-results
 /playwright-report
+docs
+k8s
+scripts
+test
+playwright.config.ts
 tmp-visual.mjs
