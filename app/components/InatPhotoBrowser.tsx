@@ -172,11 +172,19 @@ export function InatPhotoBrowser({
   const [pending, setPending] = useState<PhotoCandidate | null>(null);
 
   const handlePhotoClick = (cand: PhotoCandidate) => {
-    if (full && !pickedIds.has(String(cand.photo.id))) {
-      setPending(cand);
-    } else {
-      void addPhoto(cand);
+    // A photo already on the card is never re-added: re-picking it would
+    // push a duplicate slot (and re-download the image under a fresh key),
+    // and while the card is full it would push straight past the cap
+    // instead of offering the replace flow.
+    if (pickedIds.has(String(cand.photo.id))) {
+      setStatus("That photo is already on the card.");
+      return;
     }
+    if (full) {
+      setPending(cand);
+      return;
+    }
+    void addPhoto(cand);
   };
 
   return (
