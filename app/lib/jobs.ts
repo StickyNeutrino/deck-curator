@@ -216,14 +216,19 @@ export function startJob(options: StartJobOptions, run: Runner): Promise<JobReco
   };
 
   const settle = async (): Promise<JobRecord> => {
+    let outcome: JobStatus = "completed";
+    let result: string | JobOutcome | void | undefined;
+    let failure: unknown;
     try {
-      const result = await run(handle);
+      result = await run(handle);
       update(id, (r) => {
         r.status = "completed";
         r.finishedAt = new Date().toISOString();
         applyOutcome(r, result);
       });
     } catch (err) {
+      failure = err;
+      outcome = controller.signal.aborted ? "cancelled" : "failed";
       update(id, (r) => {
         r.finishedAt = new Date().toISOString();
         if (controller.signal.aborted) {
@@ -236,10 +241,26 @@ export function startJob(options: StartJobOptions, run: Runner): Promise<JobReco
       });
     } finally {
       controllers.delete(id);
-      unseen.add(id);
+      // A concurrent remove/clear can have dropped the record already —
+      // don't leave a badge-counting ghost behind for a job nobody lists.
+      if (jobs.some((j) => j.id === id)) unseen.add(id);
       persist();
     }
-    return jobs.find((j) => j.id === id)!;
+    // The record can disappear between the final update and this lookup
+    // (the dock's "clear finished" runs on click). Hand back the outcome
+    // this settle knows about instead of a missing record — callers read
+    // `status` and `message` off the result.
+    const listed = jobs.find((j) => j.id === id);
+    if (listed) return listed;
+    const final = { ...record, status: outcome, finishedAt: new Date().toISOString() };
+    if (outcome === "failed") {
+      final.message = failure instanceof Error ? failure.message : String(failure);
+    } else if (outcome === "cancelled") {
+      final.message = `Cancelled after ${final.done} of ${final.total}.`;
+    } else {
+      applyOutcome(final, result);
+    }
+    return final;
   };
 
   return settle();

@@ -70,6 +70,26 @@ describe("job manager", () => {
     expect(record.finishedAt).toBeTruthy();
   });
 
+  it("resolves with its outcome even when the record is cleared before settling", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const settled = startJob({ kind: "export-deck", label: "Exporting deck" }, async () => {
+      await gate;
+      return "Saved deck.deck to your downloads.";
+    });
+    const id = getJobs()[0].id;
+    // The dock's "clear finished" (or a single remove) runs while the job
+    // is still settling — the settled promise must still hand the caller a
+    // record with the real outcome, not undefined.
+    removeJob(id);
+    release();
+    const record = await settled;
+    expect(record.status).toBe("completed");
+    expect(record.message).toBe("Saved deck.deck to your downloads.");
+    // And no badge counts a ghost job that isn't listed anymore.
+    expect(unseenJobCount()).toBe(0);
+  });
+
   it("stores structured outcomes (tool conflicts)", async () => {
     await startJob({ kind: "tool-native", label: "Label native" }, async () => ({
       message: "checked 2 · labeled 1 · 1 kept as-is",
