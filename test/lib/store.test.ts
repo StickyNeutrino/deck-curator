@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot, withRecordLock } from "~/lib/store";
+import { saveProject, getProject, listProjects, deleteProject, putFile, getFile, listFiles, deleteFile, renameProject, cachedGetFile, peekCachedFile, restoreSnapshot, withRecordLock, onProjectChange } from "~/lib/store";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
@@ -119,6 +119,21 @@ describe("project store", () => {
     expect(await getProject(a.id)).toBeDefined();
     expect(await getProject(b.id)).toBeDefined();
     expect(await getFile(a.id, "x.jpg")).toBeDefined();
+  });
+
+  it("notifies record observers after writes, moves, and deletes", async () => {
+    const events: string[] = [];
+    const unsubscribe = onProjectChange((id) => events.push(id));
+    const project = newProject("Observed");
+    await saveProject(project);
+    expect(events).toEqual([project.id]);
+    await renameProject(project.id, "observed-2");
+    expect(events).toEqual([project.id, project.id, "observed-2"]);
+    await deleteProject("observed-2");
+    expect(events).toEqual([project.id, project.id, "observed-2", "observed-2"]);
+    unsubscribe();
+    await saveProject({ ...project, id: "observed-3" });
+    expect(events).toHaveLength(4);
   });
 
   it("a record write that overlaps a rename travels with the deck", async () => {

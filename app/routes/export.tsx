@@ -1,7 +1,7 @@
 import type { Route } from "./+types/export";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
-import { getProject } from "~/lib/store";
+import { getProject, onProjectChange } from "~/lib/store";
 import type { Project } from "~/lib/types";
 import { exportProjectFile, exportDeckFile, exportLightDeck } from "~/lib/export";
 import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
@@ -61,9 +61,32 @@ export default function ExportPage() {
 
   useEffect(() => {
     if (!projectId) return;
-    void getProject(projectId)
-      .then((p) => setProject(p ?? null))
-      .catch((err) => setSaveError(`Couldn't load the deck: ${err instanceof Error ? err.message : err}`));
+    let cancelled = false;
+    const load = () => {
+      void getProject(projectId)
+        .then((p) => {
+          // A deck that vanished (deleted, renamed in another tab) leaves
+          // the loaded snapshot in place rather than blanking the page;
+          // exports from it are the curator's call.
+          if (!cancelled && p) setProject(p);
+        })
+        .catch((err) => {
+          if (!cancelled) setSaveError(`Couldn't load the deck: ${err instanceof Error ? err.message : err}`);
+        });
+    };
+    load();
+    // Background jobs keep writing the deck while this page sits open, and
+    // the page registers no live updater of its own — follow the store's
+    // record writes so the validation report, the exports, and the
+    // "Before restoring" checkpoint describe the deck as it is now, not as
+    // it was when the page opened.
+    const unsubscribe = onProjectChange((id) => {
+      if (id === projectId) load();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [projectId]);
 
   const issues = useMemo(

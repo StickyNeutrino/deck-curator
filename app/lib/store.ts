@@ -81,7 +81,10 @@ export async function saveProject(project: Project, at?: string): Promise<void> 
   const record = structuredClone(project);
   record.updatedAt = at ?? new Date().toISOString();
   const database = await db();
-  await database.put("projects", record);
+  const tx = database.transaction("projects", "readwrite");
+  tx.objectStore("projects").put(record);
+  await tx.done;
+  notifyProjectChange(project.id);
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {
@@ -156,6 +159,8 @@ export async function renameProject(oldId: string, newId: string): Promise<void>
     // Every file moved between prefixes — invalidate both sides' caches.
     notifyFileChange(oldId, null);
     notifyFileChange(newId, null);
+    notifyProjectChange(oldId);
+    notifyProjectChange(newId);
   });
 }
 
@@ -188,6 +193,7 @@ export async function restoreSnapshot(
   // entries would render the pre-restore photos.
   dropCachedBlobs(`${projectId}/`);
   notifyFileChange(projectId, null);
+  notifyProjectChange(projectId);
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -203,6 +209,7 @@ export async function deleteProject(id: string): Promise<void> {
   await tx.done;
   dropCachedBlobs(`${id}/`);
   notifyFileChange(id, null);
+  notifyProjectChange(id);
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -297,6 +304,27 @@ export function onFileChange(listener: FileChangeListener): () => void {
 
 function notifyFileChange(projectId: string, fileKey: string | null): void {
   for (const listener of fileChangeListeners) listener(projectId, fileKey);
+}
+
+// ---------- project record change notifications ----------
+// Read-only pages (the export page loads the record once) must not work from
+// a stale snapshot while background jobs keep writing the deck — every
+// record write/move/delete notifies here, after the write has landed, so
+// observers can re-read.
+
+type ProjectChangeListener = (projectId: string) => void;
+const projectChangeListeners = new Set<ProjectChangeListener>();
+
+/** Listen for project record changes. Returns an unsubscribe function. */
+export function onProjectChange(listener: ProjectChangeListener): () => void {
+  projectChangeListeners.add(listener);
+  return () => {
+    projectChangeListeners.delete(listener);
+  };
+}
+
+function notifyProjectChange(projectId: string): void {
+  for (const listener of projectChangeListeners) listener(projectId);
 }
 
 // ---------- warm session blob cache ----------
