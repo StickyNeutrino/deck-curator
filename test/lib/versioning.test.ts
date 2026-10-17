@@ -121,6 +121,68 @@ describe("git versioning", () => {
     expect(log[0].commit.message.trim()).toBe("probe commit");
   }, 60000);
 
+  it("drops a deleted photo from the working tree and later commits", async () => {
+    const project = sample();
+    project.species[0].photos.push({
+      id: "upload:x",
+      role: "main",
+      credit: { observer: "A", license: "cc0" },
+      fileKey: "oak-main.jpg",
+    });
+    await putFile(project.id, "oak-main.jpg", new Blob(["jpeg-bytes"]));
+    await saveProject(project);
+    await ensureRepo(project); // the initial commit carries the photo
+
+    // The photo is removed from the deck; the next commit must not carry it.
+    project.species[0].photos = [];
+    await saveProject(project);
+    await commitDeckVersion(project, undefined, "remove photo");
+
+    const fs = new FS("deck-curator-git");
+    const dir = `/${project.id}`;
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    // With the last photo gone the photos/ subtree vanishes from the tree…
+    await expect(git.readTree({ fs, dir, oid: head, filepath: "photos" })).rejects.toThrow();
+    // …and the working tree file is gone too, not just unstaged.
+    await expect(fs.promises.stat(`${dir}/photos/oak-main.jpg`)).rejects.toThrow();
+
+    // Earlier versions still hold the photo — history stays reachable.
+    const versions = await listVersions(project.id);
+    const initial = versions[versions.length - 1];
+    const { blob } = await git.readBlob({ fs, dir, oid: initial.oid, filepath: "photos/oak-main.jpg" });
+    expect(new TextDecoder().decode(blob)).toBe("jpeg-bytes");
+  }, 60000);
+
+  it("replaces a removed photo's tree entry when another photo takes its place", async () => {
+    const project = sample();
+    project.species[0].photos.push({
+      id: "upload:x",
+      role: "main",
+      credit: { observer: "A", license: "cc0" },
+      fileKey: "old.jpg",
+    });
+    await putFile(project.id, "old.jpg", new Blob(["old"]));
+    await saveProject(project);
+    await ensureRepo(project);
+
+    project.species[0].photos[0] = {
+      id: "upload:y",
+      role: "main",
+      credit: { observer: "B", license: "cc0" },
+      fileKey: "new.jpg",
+    };
+    await putFile(project.id, "new.jpg", new Blob(["new"]));
+    await saveProject(project);
+    await commitDeckVersion(project, undefined, "swap photo");
+
+    const fs = new FS("deck-curator-git");
+    const dir = `/${project.id}`;
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    const { tree } = await git.readTree({ fs, dir, oid: head, filepath: "photos" });
+    const paths = tree.filter((e) => e.type === "blob").map((e) => e.path);
+    expect(paths).toEqual(["new.jpg"]);
+  }, 60000);
+
   it("restore waits for an in-flight record write instead of racing it", async () => {
     const project = sample();
     await saveProject(project);

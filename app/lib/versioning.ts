@@ -425,6 +425,37 @@ async function commitAll(
 
   // Authorship is read at commit time — a saved curator identity (or the
   // default, see lib/author) stamps every version as it lands.
+  // Photos the deck no longer references must not linger first: the index
+  // carries them into every later commit's tree — and into every exported
+  // history — even though nothing reads them back anymore.
+  const referenced = new Set<string>();
+  for (const species of project.species) {
+    for (const photo of species.photos) {
+      for (const fileKey of [photo.fileKey, photo.animation?.fileKey]) {
+        if (fileKey) referenced.add(fileKey);
+      }
+    }
+  }
+  try {
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    const { tree } = await git.readTree({ fs, dir, oid: head, filepath: "photos" });
+    for (const entry of tree) {
+      if (entry.type !== "blob" || referenced.has(entry.path)) continue;
+      try {
+        await git.remove({ fs, dir, filepath: `photos/${entry.path}` });
+      } catch {
+        // Already out of the index — the unlink below still applies.
+      }
+      try {
+        await fs.promises.unlink(`${dir}/photos/${entry.path}`);
+      } catch {
+        // Already gone from the working tree.
+      }
+    }
+  } catch {
+    // No readable history (a fresh repo has no HEAD) — nothing committed
+    // to clean.
+  }
   const oid = await git.commit({ fs, dir, message, author: getAuthor() });
   // The commit landed: only now may the session cache treat these photos as
   // committed. A failure above leaves the cache untouched, so the next
