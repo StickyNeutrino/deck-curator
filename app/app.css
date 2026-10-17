@@ -209,6 +209,19 @@ button {
   border-radius: 0.8cqw;
 }
 
+/* ---------- leaflet maps ---------- */
+
+/* Leaflet's internal panes use z-index 100–1000 (tiles 200, markers 600,
+   popups 700, controls 1000), and Leaflet pins the map container to
+   position:relative without a z-index — so those pane values escape the map
+   and compete with the app's own overlays (search dropdowns z-20/30, the
+   jobs pill z-40, modals z-50), painting the map on top of them. Giving the
+   container z-index:0 makes it a stacking context: every pane stays inside
+   the map, which as a whole sits below all app chrome. */
+.leaflet-container {
+  z-index: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;

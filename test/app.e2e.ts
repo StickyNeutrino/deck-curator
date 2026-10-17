@@ -165,6 +165,78 @@ test("map marker icon actually loads (no broken default-icon path)", async ({ pa
     .toBeGreaterThan(0);
 });
 
+test("location search results paint above the map", async ({ page }) => {
+  // Regression: Leaflet's internal panes use z-index 100–1000, and its JS
+  // pins the map container to position:relative without a z-index — no
+  // stacking context, so the pane values escaped the map and it painted over
+  // the search dropdown, the jobs pill, and modal overlays. app.css pins
+  // .leaflet-container to z-index:0, making the container a stacking context.
+  //
+  // Hit-testing can't catch this class of bug directly: Leaflet tiles are
+  // pointer-events:none and the panes are zero-sized, so elementFromPoint
+  // falls through to the dropdown whether or not the map paints over it —
+  // the rows stay clickable while being invisible. The zoom control, though,
+  // is a real hit-testable element (z-index 1000) inside the map, sitting in
+  // the top-left corner the dropdown hangs over. When the map is contained,
+  // the dropdown paints above it; when the bug exists, the control wins.
+  await page.route("**/nominatim.openstreetmap.org/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        Array.from({ length: 5 }, (_, i) => ({
+          display_name: `Result ${i + 1}, San Diego, California`,
+          lat: String(32.7 + i * 0.01),
+          lon: "-117.1",
+        })),
+      ),
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "New deck" }).click();
+  await page.getByTestId("new-deck-name").fill("Stack Deck");
+  await page.getByTestId("create-deck").click();
+  await page.waitForURL(/\/project\/stack-deck/);
+  await skipAuthorshipPrompt(page);
+  await page.getByTestId("tab-info").click();
+  await page.waitForURL(/\/info/);
+
+  // Five results make the dropdown hang down over the map's zoom control.
+  await page.getByTestId("location-search").fill("stack");
+  const results = page.getByTestId("location-results");
+  await expect(results.getByRole("button").last()).toBeVisible();
+  const zoomIn = page.locator(".leaflet-control-zoom-in");
+  await expect(zoomIn).toBeVisible();
+
+  // The fix works by making the map container a stacking context; if that is
+  // lost the panes escape again and this pin fails with a clear message.
+  const contained = await page.evaluate(() => {
+    const map = document.querySelector('[data-testid="location-map"]');
+    if (!map) return false;
+    const s = getComputedStyle(map);
+    return s.position !== "static" && s.zIndex !== "auto";
+  });
+  expect(contained, "the map container must establish a stacking context").toBe(true);
+
+  // At the zoom control's position — inside the dropdown's box — the
+  // topmost element must belong to the dropdown, not to the map.
+  const painted = await page.evaluate(() => {
+    const list = document.querySelector('[data-testid="location-results"]');
+    const zoom = document.querySelector(".leaflet-control-zoom-in");
+    if (!list || !zoom) return "missing";
+    const lr = list.getBoundingClientRect();
+    const zr = zoom.getBoundingClientRect();
+    const x = zr.left + zr.width / 2;
+    const y = zr.top + zr.height / 2;
+    const overDropdown =
+      x >= lr.left && x <= lr.right && y >= lr.top && y <= lr.bottom;
+    if (!overDropdown) return "no overlap"; // layout changed; revisit the test
+    const hit = document.elementFromPoint(x, y);
+    return hit?.closest('[data-testid="location-results"]') ? "dropdown" : "map";
+  });
+  expect(painted).toBe("dropdown");
+});
+
 test("version history: auto-commits once per change and lists versions", async ({ page }) => {
   test.setTimeout(90_000);
   await page.goto("/");
