@@ -11,5 +11,7 @@ README.md
 docs
 k8s
 scripts
-test
-playwright.config.ts
+# The ci stage (see Dockerfile) runs the test suite, so the tests and the
+# Playwright config must stay in the context for `docker build --target ci`.
+# The shipped image still never contains them: its final stage copies only
+# build/client and production node_modules.

@@ -34,3 +34,35 @@ USER node
 # manifests' securityContext) forbids. The listen port is pinned to the
 # container port the service targets instead of relying on serve's default.
 CMD ["./node_modules/.bin/serve", "./build/client", "--single", "--listen", "3000"]
+
+# ---------- CI (docker build --target ci) ----------
+# A throwaway test-runner image, never pushed: dev dependencies and the
+# Playwright browser stay off the registry, and the shipped image above
+# inherits nothing from this stage. scripts/ci.sh runs it as the gate both
+# deploy scripts must pass before anything is pushed or rolled out.
+#
+# Debian instead of Alpine: Playwright's Chromium needs glibc and a set of
+# shared libraries Alpine doesn't ship. `playwright install --with-deps`
+# downloads the browser revision matching whatever @playwright/test version
+# the lockfile pins, so the browser can never drift out of sync with the
+# test runner when the dependency is bumped.
+#
+# The SPA is copied from build-env rather than rebuilt: the bundle is static
+# output, identical across bases, and the deploy scripts' later full build
+# of the shipped image then hits the build-env cache — the bundle compiles
+# once per source change across both builds. `npm ci` is layered before the
+# source copy like every stage above, so a source-only edit reuses it.
+FROM node:26-bookworm AS ci
+COPY ./package.json package-lock.json /app/
+WORKDIR /app
+RUN npm ci
+RUN npx playwright install --with-deps chromium
+COPY . /app/
+COPY --from=build-env /app/build/client /app/build/client
+# CI=1 arms Playwright's single retry and forbids reusing an already-running
+# server; E2E_PROD serves build/client — the production bundle, where
+# bundler-dependent bugs actually show (see playwright.config.ts). The chain
+# runs fastest-failures-first: a type error or unit failure never pays for
+# the e2e run.
+ENV CI=1 E2E_PROD=1
+CMD ["sh", "-c", "npm run typecheck && npm run test:run && npx playwright test"]

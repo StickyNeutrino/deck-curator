@@ -7,6 +7,11 @@ set -euo pipefail
 
 IMAGE=oci.smeago.com:5000/deck-curator
 
+# CI gate first: the full suite runs in a throwaway container (see ci.sh).
+# A red run aborts here — nothing reaches the registry, and the cluster
+# keeps running whatever image it already had.
+"$(dirname "$0")/ci.sh"
+
 docker build . -t "$IMAGE"
 docker push "$IMAGE"
 

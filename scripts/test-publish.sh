@@ -7,6 +7,10 @@ set -euo pipefail
 
 IMAGE=oci.smeago.com:5000/test-deck-curator
 
+# CI gate first, same as the production publish: the testing environment
+# exists to catch problems, not to run the suite for us.
+"$(dirname "$0")/ci.sh"
+
 docker build . -t "$IMAGE"
 docker push "$IMAGE"
 
