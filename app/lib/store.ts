@@ -142,16 +142,18 @@ export async function renameProject(oldId: string, newId: string): Promise<void>
     projects.delete(oldId);
     projects.put(moved);
     await tx.done;
-    // Keep any cached blobs warm under the new prefix.
+    // Keep any cached blobs warm under the new prefix — and invalidate the
+    // old prefix's generations, so a fill that read the old id mid-move
+    // can't land its stale bytes after the rebuild.
     if (blobCache.size > 0) {
       const movedBlobs = new Map<string, Blob>();
       for (const [cachedKey, blob] of blobCache) {
-        movedBlobs.set(
-          cachedKey.startsWith(`${oldId}/`)
-            ? `${newId}/${cachedKey.slice(oldId.length + 1)}`
-            : cachedKey,
-          blob,
-        );
+        if (cachedKey.startsWith(`${oldId}/`)) {
+          bumpBlobGeneration(cachedKey);
+          movedBlobs.set(`${newId}/${cachedKey.slice(oldId.length + 1)}`, blob);
+        } else {
+          movedBlobs.set(cachedKey, blob);
+        }
       }
       blobCache.clear();
       for (const [cachedKey, blob] of movedBlobs) blobCache.set(cachedKey, blob);
@@ -238,7 +240,9 @@ export async function putFile(projectId: string, key: string, blob: Blob): Promi
   await database.put("files", { buffer, type: blob.type || "image/jpeg" }, fileKey(projectId, key));
   // A fresh write is by definition not stale: refresh the warm cache so the
   // next preview (e.g. back on the review page) shows the new bytes at once.
-  rememberBlob(fileKey(projectId, key), blob);
+  const cachedKey = fileKey(projectId, key);
+  bumpBlobGeneration(cachedKey);
+  rememberBlob(cachedKey, blob);
   notifyFileChange(projectId, key);
 }
 
@@ -277,6 +281,7 @@ export async function getFile(projectId: string, key: string): Promise<Blob | un
 export async function deleteFile(projectId: string, key: string): Promise<void> {
   const database = await db();
   await database.delete("files", fileKey(projectId, key));
+  bumpBlobGeneration(fileKey(projectId, key));
   blobCache.delete(fileKey(projectId, key));
   notifyFileChange(projectId, key);
 }
@@ -336,6 +341,17 @@ function notifyProjectChange(projectId: string): void {
 
 const BLOB_CACHE_LIMIT = 250;
 const blobCache = new Map<string, Blob>(); // key: `${projectId}/${fileKey}`
+// Write generation per cached key. A cache fill's IndexedDB read and a
+// concurrent write are separate transactions: when the read wins the race
+// it returns the OLD bytes, and remembering them unconditionally would
+// replace the fresh entry until the next write corrected it. Every
+// byte-changing path bumps the generation, so a fill that overlapped a
+// write knows to keep out of the way.
+const blobGenerations = new Map<string, number>();
+
+function bumpBlobGeneration(cachedKey: string): void {
+  blobGenerations.set(cachedKey, (blobGenerations.get(cachedKey) ?? 0) + 1);
+}
 
 function rememberBlob(cachedKey: string, blob: Blob): void {
   // Re-insert so the entry counts as most recently used for eviction.
@@ -348,7 +364,10 @@ function rememberBlob(cachedKey: string, blob: Blob): void {
 
 function dropCachedBlobs(prefix: string): void {
   for (const cachedKey of Array.from(blobCache.keys())) {
-    if (cachedKey.startsWith(prefix)) blobCache.delete(cachedKey);
+    if (cachedKey.startsWith(prefix)) {
+      bumpBlobGeneration(cachedKey);
+      blobCache.delete(cachedKey);
+    }
   }
 }
 
@@ -362,8 +381,11 @@ export async function cachedGetFile(projectId: string, key: string): Promise<Blo
   const cachedKey = fileKey(projectId, key);
   const hit = blobCache.get(cachedKey);
   if (hit) return hit;
+  // Snapshot before the read: if a write lands while it is in flight, the
+  // stale bytes it read must not be remembered over the fresh entry.
+  const generation = blobGenerations.get(cachedKey) ?? 0;
   const blob = await getFile(projectId, key);
-  if (blob) rememberBlob(cachedKey, blob);
+  if (blob && (blobGenerations.get(cachedKey) ?? 0) === generation) rememberBlob(cachedKey, blob);
   return blob;
 }
 

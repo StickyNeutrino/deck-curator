@@ -189,6 +189,27 @@ describe("project store", () => {
     expect(await cachedGetFile(project.id, "a.jpg")).toBeUndefined();
   });
 
+  it("keeps the cache on the newest bytes when a cold read overlaps an overwrite", async () => {
+    const project = newProject("Overlap");
+    await saveProject(project);
+    await putFile(project.id, "a.jpg", new Blob(["first"]));
+    await cachedGetFile(project.id, "a.jpg");
+    // Churn the cache past its limit so the next read is a cold fill whose
+    // IndexedDB read is still in flight while the overwrite lands.
+    for (let i = 0; i < 300; i++) {
+      await putFile(project.id, `churn-${i}.jpg`, new Blob([String(i)]));
+    }
+    const fill = cachedGetFile(project.id, "a.jpg");
+    await putFile(project.id, "a.jpg", new Blob(["brand-new-bytes"]));
+    // The fill read the pre-overwrite record (the read transaction was
+    // issued first) — its stale bytes must not land in the cache over the
+    // fresh entry the write remembered.
+    expect((await fill)!.size).toBe(5);
+    const again = await cachedGetFile(project.id, "a.jpg");
+    expect(again!.size).toBe(15);
+    expect(again).toBe(peekCachedFile(project.id, "a.jpg"));
+  });
+
   it("drops cached blobs when a version restore rewrites the deck's files", async () => {
     const project = newProject("Restore");
     await saveProject(project);
