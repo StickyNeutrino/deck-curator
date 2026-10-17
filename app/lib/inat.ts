@@ -172,18 +172,20 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 
 /** iNat API GET with IndexedDB cache, retry and circuit breaker. Pass
  *  `signal` to cancel — an aborted request neither retries nor counts
- *  against the breaker. */
+ *  against the breaker. `cache: false` skips the permanent cache in both
+ *  directions (for responses whose keys would outlive their usefulness). */
 export async function inatGet<T>(
   endpoint: string,
   params: Record<string, string | number | boolean | undefined> = {},
   signal?: AbortSignal,
+  { cache = true }: { cache?: boolean } = {},
 ): Promise<T> {
   const url = new URL(endpoint, API_BASE);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) url.searchParams.set(k, String(v));
   }
   const cacheKey = `inat:${url.pathname.slice(1)}?${url.searchParams.toString()}`;
-  const cached = await getCachedApi(cacheKey);
+  const cached = cache ? await getCachedApi(cacheKey) : undefined;
   if (cached !== undefined) return cached as T;
 
   let lastErr: unknown;
@@ -216,7 +218,7 @@ export async function inatGet<T>(
         }
       });
       noteSuccess();
-      await putCachedApi(cacheKey, json);
+      if (cache) await putCachedApi(cacheKey, json);
       return json;
     } catch (err) {
       // Abort: give up immediately — the caller moved on. A timeout is a
@@ -230,9 +232,15 @@ export async function inatGet<T>(
 }
 
 export async function autocompleteTaxon(q: string, signal?: AbortSignal): Promise<InatTaxon[]> {
-  // Autocomplete queries bypass the permanent cache (users type as they
-  // think); results are still cached via the same store.
-  const json = await inatGet<{ results: InatTaxon[] }>("taxa/autocomplete", { q, per_page: 10 }, signal);
+  // Autocomplete lookups are never cached: users type as they think, and
+  // every ≥3-character prefix would otherwise become a permanent cache
+  // record that nothing re-reads.
+  const json = await inatGet<{ results: InatTaxon[] }>(
+    "taxa/autocomplete",
+    { q, per_page: 10 },
+    signal,
+    { cache: false },
+  );
   return json.results;
 }
 
