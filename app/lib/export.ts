@@ -361,18 +361,31 @@ function pack(zip: Zippable, manifest: object, filename: string): ExportResult {
 }
 
 /** The crop window carried by each still's fileKey, for baking at export.
- *  Keys with no crop, and keys whose sharers disagree on the crop, are
- *  absent (pass through untouched, metadata unchanged). Exported for tests. */
+ *  A key bakes only when EVERY slot sharing it carries the same crop — a
+ *  disagreement, or a sharer with no crop at all (it needs the full pixels),
+ *  leaves the key absent (pass through untouched, metadata unchanged).
+ *  Exported for tests. */
 export function planCropBakes(project: Project): Map<string, CropWindow> {
   const out = new Map<string, CropWindow>();
+  // Once a key conflicts it stays conflicted: map absence can't tell "no
+  // decision yet" from "decided against" — without this set, a later sharer
+  // repeating the first slot's crop would resurrect the bake and the
+  // disagreeing slot would ship its crop metadata over already-cropped
+  // pixels.
+  const conflicted = new Set<string>();
   for (const species of project.species) {
     for (const slot of species.photos) {
-      if (!slot.crop) continue;
+      if (conflicted.has(slot.fileKey)) continue;
       const existing = out.get(slot.fileKey);
       if (existing === undefined) {
-        out.set(slot.fileKey, slot.crop);
-      } else if (!sameCrop(existing, slot.crop)) {
+        // First sharer sets the candidate — or kills the key outright when
+        // it carries no crop: baked pixels would leave that slot rendering
+        // only the other sharer's crop region as its whole image.
+        if (slot.crop) out.set(slot.fileKey, slot.crop);
+        else conflicted.add(slot.fileKey);
+      } else if (!slot.crop || !sameCrop(existing, slot.crop)) {
         out.delete(slot.fileKey);
+        conflicted.add(slot.fileKey);
       }
     }
   }

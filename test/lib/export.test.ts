@@ -385,6 +385,52 @@ describe("baked crops", () => {
     expect(plan.get("b.jpg")).toEqual({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
     expect(plan.has("c.jpg")).toBe(false); // nothing to bake
   });
+
+  it("keeps a conflicted key dropped even when a later sharer repeats an earlier crop", () => {
+    // Crops [A, B, A] over one file: the third slot must not resurrect the
+    // bake the second slot's disagreement killed — B would otherwise ship
+    // its crop metadata over pixels already cropped to A.
+    const project = newProject("Bake echo");
+    const a = makeSpecies({ commonName: "Oak", category: "plants" });
+    a.photos.push(slotWith("a.jpg", { x: 0, y: 0, w: 0.5, h: 0.5 }));
+    const b = makeSpecies({ commonName: "Ivy", category: "plants" });
+    b.photos.push(slotWith("a.jpg", { x: 0.2, y: 0, w: 0.5, h: 0.5 }));
+    const aAgain = makeSpecies({ commonName: "Fern", category: "plants" });
+    aAgain.photos.push(slotWith("a.jpg", { x: 0, y: 0, w: 0.5, h: 0.5 }));
+    project.species.push(a, b, aAgain);
+
+    expect(planCropBakes(project).has("a.jpg")).toBe(false);
+  });
+
+  it("never bakes a key an uncropped slot shares (it needs the full pixels)", () => {
+    const project = newProject("Bake sharers");
+    const crop = { x: 0, y: 0, w: 0.5, h: 0.5 };
+    const orderings: Array<[string, boolean]> = [
+      // cropped first, uncropped second — and the reverse
+      ["cropped-then-bare", false],
+      ["bare-then-cropped", false],
+    ];
+    for (const [label] of orderings) {
+      const project2 = newProject(label);
+      const bare = makeSpecies({ commonName: "Moss", category: "plants" });
+      bare.photos.push(slotWith("a.jpg"));
+      const cropped = makeSpecies({ commonName: "Oak", category: "plants" });
+      cropped.photos.push(slotWith("a.jpg", crop));
+      project2.species.push(...(label === "cropped-then-bare" ? [cropped, bare] : [bare, cropped]));
+      expect(planCropBakes(project2).has("a.jpg")).toBe(false);
+    }
+
+    // An uncropped sharer arriving after unanimous agreement conflicts too.
+    const lateBare = newProject("Bake late bare");
+    const one = makeSpecies({ commonName: "Oak", category: "plants" });
+    one.photos.push(slotWith("a.jpg", crop));
+    const two = makeSpecies({ commonName: "Ivy", category: "plants" });
+    two.photos.push(slotWith("a.jpg", { ...crop }));
+    const bare = makeSpecies({ commonName: "Moss", category: "plants" });
+    bare.photos.push(slotWith("a.jpg"));
+    lateBare.species.push(one, two, bare);
+    expect(planCropBakes(lateBare).has("a.jpg")).toBe(false);
+  });
 });
 
 describe("variant card naming", () => {
