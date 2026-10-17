@@ -22,7 +22,7 @@ export function FrameModal({
 }: {
   projectId: string;
   slot: PhotoSlot;
-  onSave: (still: Blob) => void;
+  onSave: (still: Blob) => Promise<void> | void;
   onClose: () => void;
 }) {
   const kind = slot.animation?.kind ?? "video";
@@ -121,7 +121,10 @@ export function FrameModal({
       } else {
         still = await extractGifFrame(blob, 0);
       }
-      onSave(still);
+      // The save writes the captured frame to the store (the caller's
+      // onSave) before the modal closes — a failure keeps the modal open
+      // and shows the error instead of closing over a lost frame.
+      await onSave(still);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
