@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useProjectDoc, saveRetry } from "~/lib/useProjectDoc";
+import { useProjectDoc, saveRetry, mutateProject } from "~/lib/useProjectDoc";
 import { saveProject, getProject, renameProject } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
@@ -114,5 +114,85 @@ describe("record save retry", () => {
     expect(spy).not.toHaveBeenCalled();
     expect(await getProject(project.id)).toBeUndefined();
     expect(await getProject("vanishing-2")).toBeDefined();
+  });
+});
+
+describe("job edits that arrive before the record loads", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("applies an edit that lands while the deck is still loading", async () => {
+    const project = newProject("Slow load");
+    await saveProject(project);
+    // Hold the page's load open so a job's edit arrives before any record
+    // exists to apply it to.
+    const realGet = store.getProject;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(store, "getProject").mockImplementation(async (id) => {
+      await gate;
+      return realGet(id);
+    });
+
+    const { result } = renderHook(() => useProjectDoc(project.id));
+    await mutateProject(project.id, (d) => {
+      d.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus" }));
+    });
+    release();
+
+    // The queued edit applies to the loaded record — the page shows it and
+    // the autosave persists it. (It used to be dropped silently, and the
+    // armed dirty flag then rewrote the record without the edit.)
+    await waitFor(() => expect(result.current.project).not.toBeNull());
+    expect(result.current.project!.species.map((s) => s.commonName)).toContain("Oak");
+    await waitFor(async () => {
+      const stored = await realGet(project.id);
+      expect(stored!.species.map((s) => s.commonName)).toContain("Oak");
+    });
+  });
+
+  it("lands an edit directly when the deck fails to load", async () => {
+    const project = newProject("Broken load");
+    await saveProject(project);
+    const realGet = store.getProject;
+    vi.spyOn(store, "getProject")
+      .mockRejectedValueOnce(new Error("storage hiccup"))
+      .mockImplementation((id) => realGet(id));
+
+    const { result } = renderHook(() => useProjectDoc(project.id));
+    await mutateProject(project.id, (d) => {
+      d.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus" }));
+    });
+
+    await waitFor(() => expect(result.current.loadError).not.toBeNull());
+    await waitFor(async () => {
+      const stored = await realGet(project.id);
+      expect(stored!.species.map((s) => s.commonName)).toContain("Oak");
+    });
+  });
+
+  it("lands a queued edit when the page unmounts before the load finishes", async () => {
+    const project = newProject("Leaving");
+    await saveProject(project);
+    const realGet = store.getProject;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(store, "getProject").mockImplementation(async (id) => {
+      await gate;
+      return realGet(id);
+    });
+
+    const { unmount } = renderHook(() => useProjectDoc(project.id));
+    await mutateProject(project.id, (d) => {
+      d.species.push(makeSpecies({ commonName: "Oak", sciName: "Quercus" }));
+    });
+    unmount();
+    release();
+
+    await waitFor(async () => {
+      const stored = await realGet(project.id);
+      expect(stored!.species.map((s) => s.commonName)).toContain("Oak");
+    });
   });
 });
