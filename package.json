@@ -52,5 +52,10 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "serve": {
+      "compression": "^1.8.2"
+    }
   }
 }
