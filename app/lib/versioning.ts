@@ -2,7 +2,7 @@ import type { Project } from "./types";
 import { migrateProject, referencedFileKeys } from "./types";
 import { blobToArrayBuffer } from "./blobUtils";
 import { buildManifest } from "./export";
-import { getFile, restoreSnapshot, onFileChange } from "./store";
+import { getFile, restoreSnapshot, onFileChange, withRecordLock } from "./store";
 import { getAuthor } from "./author";
 import "./polyfills";
 
@@ -468,6 +468,13 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
  *  reachable (checking out would have detached HEAD and orphaned newer
  *  commits).
  *
+ *  The record lock is held for the whole run — a background job's
+ *  read-modify-write cycle that overlaps the restore must not write its
+ *  pre-restore record back after the snapshot swap, which would resurrect
+ *  the old state referencing files the snapshot just deleted. The git-level
+ *  project lock stays outermost; record writers never take it (they commit
+ *  only later, via the autosave debounce), so no ordering inversion exists.
+ *
  *  The restored project keeps the LIVE deck id — history may predate an id
  *  rename, and saving the historical id would recreate the record/file
  *  mismatch the rename migration exists to prevent. */
@@ -475,7 +482,9 @@ export async function restoreVersion(
   projectId: string,
   oid: string,
 ): Promise<{ project: Project } | null> {
-  return withProjectLock(projectId, () => restoreVersionUnlocked(projectId, oid));
+  return withProjectLock(projectId, () =>
+    withRecordLock(projectId, () => restoreVersionUnlocked(projectId, oid)),
+  );
 }
 
 async function restoreVersionUnlocked(

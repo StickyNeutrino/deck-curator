@@ -16,6 +16,25 @@ import { blobToArrayBuffer } from "./blobUtils";
 const DB_NAME = "deck-curator";
 const DB_VERSION = 1;
 
+/** Serialize whole-record read-modify-write cycles per project. A background
+ *  job and the species editor's explicit save both read the record, change
+ *  it, and write it back — interleaved, one would silently overwrite the
+ *  other's changes. Version restore (see versioning.restoreVersion) joins
+ *  this lock too: its snapshot swap must not interleave with a record
+ *  writer, or the writer's pre-restore record lands after the restore and
+ *  references files the snapshot just deleted. Lives here — not in a React
+ *  hook module — so non-hook code can join without an import cycle.
+ *  Never nest: a locked cycle must not start another one for the same
+ *  project. */
+const recordQueues = new Map<string, Promise<unknown>>();
+
+export function withRecordLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const tail = (recordQueues.get(projectId) ?? Promise.resolve()).catch(() => undefined);
+  const run = tail.then(fn);
+  recordQueues.set(projectId, run.catch(() => undefined));
+  return run;
+}
+
 interface CacheRecord {
   key: string;
   body: unknown;

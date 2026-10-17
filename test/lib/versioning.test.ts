@@ -6,7 +6,7 @@ import { commitDeckVersion, ensureRepo, listVersions, restoreVersion } from "~/l
 import { saveAuthor } from "~/lib/author";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
-import { saveProject, putFile, getFile } from "~/lib/store";
+import { saveProject, putFile, getFile, getProject, withRecordLock } from "~/lib/store";
 import { exportProjectFile } from "~/lib/export";
 import { blobToArrayBuffer } from "~/lib/blobUtils";
 
@@ -119,6 +119,45 @@ describe("git versioning", () => {
     const fs = new FS("deck-curator-git");
     const log = await git.log({ fs, dir: `/${project.id}`, depth: 10 });
     expect(log[0].commit.message.trim()).toBe("probe commit");
+  }, 60000);
+
+  it("restore waits for an in-flight record write instead of racing it", async () => {
+    const project = sample();
+    await saveProject(project);
+    await ensureRepo(project); // v1: "Oak", no photo
+    const v1 = (await listVersions(project.id))[0];
+
+    // v2: rename the species and commit.
+    project.species[0].commonName = "Renamed Oak";
+    await saveProject(project);
+    await commitDeckVersion(project, undefined, "rename");
+
+    // A background job starts a record read-modify-write cycle, reads the
+    // pre-restore record, then stalls before its write.
+    let releaseJob!: () => void;
+    const jobStalled = new Promise<void>((resolve) => { releaseJob = resolve; });
+    const job = withRecordLock(project.id, async () => {
+      const current = await getProject(project.id);
+      const draft = structuredClone(current!);
+      draft.species[0].commonName = "Job's Oak";
+      await jobStalled;
+      await saveProject(draft);
+    });
+
+    // Restore must queue behind the job's cycle — not overwrite the record
+    // underneath it. (Before the record lock was shared, the restore's
+    // snapshot swap landed mid-cycle and the job's write then resurrected
+    // the pre-restore record on top of it.)
+    const restorePromise = restoreVersion(project.id, v1.oid);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // restore reaches the record lock
+    releaseJob();
+    await job;
+    const restored = await restorePromise;
+
+    // The restored state is what the store ends up with.
+    const after = await getProject(project.id);
+    expect(after?.species[0].commonName).toBe("Oak");
+    expect(restored?.project.species[0].commonName).toBe("Oak");
   }, 60000);
 
   it("stamps commits with the curator identity, defaulting when none is set", async () => {

@@ -1,26 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getProject, saveProject } from "./store";
+import { getProject, saveProject, withRecordLock } from "./store";
 import { scheduleAutoVersion } from "./useAutoVersion";
 import type { Project } from "./types";
 
 /** `update` of each project page currently mounted, by project id. */
 const liveUpdaters = new Map<string, (mutate: (draft: Project) => void) => void>();
 
-/** Serialize whole-record read-modify-write cycles per project. A background
- *  job and the species editor's explicit save both read the record, change
- *  it, and write it back — interleaved, one would silently overwrite the
- *  other's changes. Only cycle-shaped writers need this: the page-driven
- *  save effect always writes the newest state wholesale, and the live-updater
- *  path funnels jobs through that state. Never nest: a locked cycle must not
- *  start another one for the same project. */
-const recordQueues = new Map<string, Promise<unknown>>();
-
-export function withRecordLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-  const tail = (recordQueues.get(projectId) ?? Promise.resolve()).catch(() => undefined);
-  const run = tail.then(fn);
-  recordQueues.set(projectId, run.catch(() => undefined));
-  return run;
-}
+/** Re-exported so existing import sites keep working; the lock lives in
+ *  store.ts now so version restore can join it (see withRecordLock there). */
+export { withRecordLock };
 
 /** Background retry pacing for a failed record save. Mutable config so the
  *  tests can shorten the waits (they run on real timers — fake clocks stall
