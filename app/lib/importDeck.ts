@@ -66,17 +66,82 @@ interface Manifest {
 
 const BORDER_IDS: BorderStyle[] = ["none", "invasive", "caution", "rare", "notable"];
 
+/** True for a JSON object — manifest entries come from outside (a
+ *  third-party archive, a hand-edited file) and must never crash the
+ *  importer mid-loop. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** Crop windows are normalized 0..1 rects, and cardGeometry divides their
+ *  width/height into CSS sizes — a malformed one (w: 0, a NaN coordinate,
+ *  out-of-bounds) would render Infinity/NaN sizes in the editor and preview.
+ *  Anything not a sane window drops the crop; the photo renders whole
+ *  instead of shipping garbage. */
+function cropFromManifest(value: unknown): { x: number; y: number; w: number; h: number } | undefined {
+  if (!isRecord(value)) return undefined;
+  const { x, y, w, h } = value;
+  const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+  if (!finite(x) || !finite(y) || !finite(w) || !finite(h)) return undefined;
+  if (w <= 0 || h <= 0) return undefined;
+  const eps = 1e-6;
+  if (x < -eps || y < -eps || x + w > 1 + eps || y + h > 1 + eps) return undefined;
+  return { x, y, w, h };
+}
+
+/** Manifest photo → slot; null when the entry is unusable (not an object,
+ *  or no file path to store bytes under). */
+function slotFromManifest(
+  photo: ManifestPhoto,
+  uniqueSlotId: (file: string) => string,
+): PhotoSlot | null {
+  if (typeof photo.file !== "string" || photo.file === "") return null;
+  const slot: PhotoSlot = {
+    id: uniqueSlotId(photo.file),
+    role: photo.role === "secondary" ? "secondary" : "main",
+    credit: {
+      observer: photo.credit?.observer ?? "unknown",
+      license: photo.credit?.license ?? "",
+      sourceUrl: photo.credit?.observationUrl ?? photo.credit?.sourceUrl,
+      observationId: photo.credit?.observationId,
+      placeLabel: photo.credit?.placeLabel,
+    },
+    fileKey: "",
+    alt: photo.alt,
+  };
+  const crop = cropFromManifest(photo.crop);
+  if (crop) slot.crop = crop;
+  else if (isRecord(photo.focus) && Number.isFinite(photo.focus.x) && Number.isFinite(photo.focus.y)) {
+    slot.focus = { x: photo.focus.x, y: photo.focus.y };
+  }
+  // The clip rides along; the archive importer resolves its fileKey
+  // when it stores the bytes (the marker form keeps it findable).
+  if (isRecord(photo.animation) && typeof photo.animation.file === "string") {
+    slot.animation = {
+      fileKey: `import:${photo.animation.file}`,
+      kind: photo.animation.kind === "gif" ? "gif" : "video",
+      durationSec: photo.animation.durationSec,
+    };
+  }
+  return slot;
+}
+
 /** Manifest → species mapping (pure, testable). Photo fileKeys are left
  *  empty — the archive importer fills them when it stores each blob. Slot
  *  ids carry the manifest file (the archive importer parses it back out)
  *  plus a `#n` suffix when one card repeats a file — React keys slot lists
  *  by id, and the light-deck exporter maps remote URLs by id, so duplicates
- *  would merge distinct slots. */
+ *  would merge distinct slots. Malformed entries — non-object photos or
+ *  cards, unusable crop windows — are skipped, so a hand-edited archive
+ *  imports what it can instead of dying halfway through. */
 export function speciesFromManifest(manifest: Manifest): {
   species: SpeciesEntry[];
   categories: Array<{ id: string; label: string }>;
 } {
-  const categories = (manifest.categories ?? []).map((c) => ({ id: c.id, label: c.label }));
+  const categoriesIn = Array.isArray(manifest.categories) ? manifest.categories : [];
+  const categories = categoriesIn
+    .filter(isRecord)
+    .map((c) => ({ id: c.id as string, label: c.label as string }));
   const species: SpeciesEntry[] = [];
   const usedSlotIds = new Set<string>();
   const uniqueSlotId = (manifestFile: string): string => {
@@ -85,60 +150,45 @@ export function speciesFromManifest(manifest: Manifest): {
     usedSlotIds.add(id);
     return id;
   };
-  for (const category of manifest.categories ?? []) {
-    for (const card of category.cards) {
-      const photos: PhotoSlot[] = (card.photos ?? []).map((photo) => {
-        const slot: PhotoSlot = {
-          id: uniqueSlotId(photo.file),
-          role: photo.role === "secondary" ? "secondary" : "main",
-          credit: {
-            observer: photo.credit?.observer ?? "unknown",
-            license: photo.credit?.license ?? "",
-            sourceUrl: photo.credit?.observationUrl ?? photo.credit?.sourceUrl,
-            observationId: photo.credit?.observationId,
-            placeLabel: photo.credit?.placeLabel,
-          },
-          fileKey: "",
-          alt: photo.alt,
-        };
-        if (photo.crop) slot.crop = { ...photo.crop };
-        else if (photo.focus) slot.focus = { ...photo.focus };
-        // The clip rides along; the archive importer resolves its fileKey
-        // when it stores the bytes (the marker form keeps it findable).
-        if (photo.animation?.file) {
-          slot.animation = {
-            fileKey: `import:${photo.animation.file}`,
-            kind: photo.animation.kind === "gif" ? "gif" : "video",
-            durationSec: photo.animation.durationSec,
-          };
-        }
-        return slot;
-      });
+  for (const category of categoriesIn) {
+    if (!isRecord(category)) continue;
+    const cat = category as unknown as { id: string; label: string; cards: ManifestCard[] };
+    const cards = Array.isArray(cat.cards) ? cat.cards : [];
+    for (const card of cards) {
+      if (!isRecord(card)) continue;
+      const c = card as unknown as ManifestCard;
+      const photos: PhotoSlot[] = (Array.isArray(c.photos) ? c.photos : [])
+        .filter((p): p is ManifestPhoto => isRecord(p))
+        .flatMap((p) => {
+          const slot = slotFromManifest(p, uniqueSlotId);
+          return slot ? [slot] : [];
+        });
       // Variant cards export names like "Name (2)"; the clean species name is
       // the back's commonName when present.
-      const cleanName = (card.commonName ?? card.name).replace(/ \(\d+\)$/, "");
+      const rawName = c.commonName ?? c.name;
+      const cleanName = (typeof rawName === "string" ? rawName : String(rawName ?? "")).replace(/ \(\d+\)$/, "");
       const border: BorderStyle =
-        card.border === "invasive" || card.invasive === true
+        c.border === "invasive" || c.invasive === true
           ? "invasive"
-          : BORDER_IDS.includes(card.border as BorderStyle)
-            ? (card.border as BorderStyle)
+          : BORDER_IDS.includes(c.border as BorderStyle)
+            ? (c.border as BorderStyle)
             : "none";
       species.push(
         makeSpecies({
-          category: category.id,
+          category: cat.id,
           commonName: cleanName,
-          sciName: card.sciName ?? "",
-          altNames: card.altNames ?? [],
-          familyCommon: card.familyCommon,
-          familyLatin: card.familyLatin,
-          native: card.native === "native" || card.native === "non-native" ? card.native : "unknown",
+          sciName: c.sciName ?? "",
+          altNames: Array.isArray(c.altNames) ? c.altNames : [],
+          familyCommon: c.familyCommon,
+          familyLatin: c.familyLatin,
+          native: c.native === "native" || c.native === "non-native" ? c.native : "unknown",
           border,
-          rarity: card.rarity ?? undefined,
-          taxonId: card.taxonId,
-          layout: card.layout === "photo-single" ? "photo-single" : "photo-trio",
-          tags: card.tags ?? [],
+          rarity: c.rarity ?? undefined,
+          taxonId: c.taxonId,
+          layout: c.layout === "photo-single" ? "photo-single" : "photo-trio",
+          tags: Array.isArray(c.tags) ? c.tags : [],
           photos,
-          inatResolved: card.taxonId != null,
+          inatResolved: c.taxonId != null,
         }),
       );
     }

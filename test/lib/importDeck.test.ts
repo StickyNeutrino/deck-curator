@@ -67,6 +67,57 @@ describe("deck archive import", () => {
     expect(entry.photos[1].role).toBe("secondary");
   });
 
+  it("imports what it can from a hand-edited manifest instead of crashing", () => {
+    const messy = {
+      id: "messy",
+      categories: [
+        {
+          id: "plants",
+          label: "Plants",
+          cards: [
+            null,
+            {
+              name: "Oak",
+              photos: [
+                null,
+                7,
+                { file: "photos/oak.jpg", crop: { x: 0, y: 0, w: 0, h: 0.5 } }, // zero width → NaN sizes
+                { file: "photos/ivy.jpg", crop: { x: 1.2, y: 0, w: 0.5, h: 0.5 } }, // out of bounds
+                { file: "photos/fern.jpg", crop: "full-frame" }, // not a window at all
+                { file: "photos/ok.jpg", crop: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } },
+                { focus: { x: 0.5, y: 0.5 } }, // no file to store
+              ],
+            },
+            { name: 7, photos: "junk" },
+          ],
+        },
+        "junk-category",
+      ],
+    } as any;
+
+    const { species, categories } = speciesFromManifest(messy);
+    // The junk category is dropped; both object cards survive (the unnamed
+    // one as an empty card the curator can fill in).
+    expect(categories).toEqual([{ id: "plants", label: "Plants" }]);
+    expect(species).toHaveLength(2);
+    const [oak, untitled] = species;
+    expect(oak.commonName).toBe("Oak");
+    // Entries with no file to store are skipped; unusable crop windows drop
+    // the crop but keep the photo (it renders whole instead of NaN-sized).
+    expect(oak.photos).toHaveLength(4);
+    expect(oak.photos[0].crop).toBeUndefined();
+    expect(oak.photos[1].crop).toBeUndefined();
+    expect(oak.photos[2].crop).toBeUndefined();
+    expect(oak.photos[3].crop).toEqual({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 });
+    expect(untitled.photos).toHaveLength(0);
+  });
+
+  it("treats a manifest whose categories are not an array as empty", () => {
+    const { species, categories } = speciesFromManifest({ id: "x", categories: "junk" } as any);
+    expect(species).toEqual([]);
+    expect(categories).toEqual([]);
+  });
+
   it("imports the archive: photos stored, project saved, re-export round-trips", async () => {
     const project = await importDeckArchive(archive());
     expect(project.id).toBe("round-trip");
