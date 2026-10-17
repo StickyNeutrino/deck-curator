@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within, act } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import userEvent from "@testing-library/user-event";
 import ProjectPage from "~/routes/project";
@@ -271,6 +271,9 @@ describe("InatTab (mocked iNat API)", () => {
     await user.click(screen.getByTestId("inat-add-selected"));
 
     await waitFor(() => expect(getJobs()[0].status).toBe("completed"));
+    // The job's edits funnel through the page state; its saves write the
+    // record asynchronously, so let the last one land before reading.
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
     expect(getJobs()[0].message).toContain("Added 3 of 3 cards");
     // One photo search for the species — the variants picked from the same
     // response instead of refetching it.

@@ -592,14 +592,25 @@ export function InatTab({
               signal: h.signal,
               pool,
             });
-            writes = writes.then(async () => {
-              await download;
-              if (h.signal.aborted) return; // cancelled — never land this card
-              await mutateProject(project.id, (d) => addEntryTo(d, card.entry));
-              done++;
-              added++;
-              h.progress(done, total, r.common ?? r.name);
-            });
+            // One failed card must not drop the queued ones: each link
+            // catches its own failure (counted as failed, progress still
+            // advances) instead of rejecting the chain and silently
+            // stranding every card behind it — with their already
+            // downloaded photos.
+            writes = writes
+              .catch(() => undefined)
+              .then(async () => {
+                await download;
+                if (h.signal.aborted) return; // cancelled — never land this card
+                try {
+                  await mutateProject(project.id, (d) => addEntryTo(d, card.entry));
+                  added++;
+                } catch {
+                  failed++;
+                }
+                done++;
+                h.progress(done, total, r.common ?? r.name);
+              });
           }
         }
         await writes;
