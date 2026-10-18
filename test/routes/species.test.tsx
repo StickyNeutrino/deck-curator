@@ -1,17 +1,25 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router";
 import userEvent from "@testing-library/user-event";
 import SpeciesPage from "~/routes/species";
 import { saveProject, getProject } from "~/lib/store";
 import { newProject } from "~/lib/importSpreadsheet";
 import { makeSpecies } from "~/lib/types";
 
-function renderSpecies(projectId: string, speciesId: string) {
+/** Shows where a navigation landed, so tests can assert "Save & close". */
+function DestinationProbe() {
+  const location = useLocation();
+  return <div data-testid="destination-url">{location.pathname + location.search}</div>;
+}
+
+function renderSpecies(projectId: string, speciesId: string, search = "") {
   return render(
-    <MemoryRouter initialEntries={[`/project/${projectId}/species/${speciesId}`]}>
+    <MemoryRouter initialEntries={[`/project/${projectId}/species/${speciesId}${search}`]}>
       <Routes>
         <Route path="/project/:projectId/species/:speciesId" element={<SpeciesPage />} />
+        <Route path="/project/:projectId/review" element={<DestinationProbe />} />
+        <Route path="/project/:projectId" element={<DestinationProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -88,6 +96,35 @@ describe("species route", () => {
     const { project } = await makeFixture();
     renderSpecies(project.id, "no-such-id");
     await screen.findByText("Species not found.");
+  });
+
+  it("Save & close returns to the page that opened the card", async () => {
+    // Opened from the review page, the editor carries ?returnTo=review —
+    // saving must land back there, not on the card list.
+    const user = userEvent.setup();
+    const { project, entry } = await makeFixture();
+    renderSpecies(project.id, entry.id, "?returnTo=review");
+    await screen.findByTestId("common-name");
+
+    await user.click(screen.getByRole("button", { name: "Save & close" }));
+
+    await screen.findByTestId("destination-url");
+    expect(screen.getByTestId("destination-url")).toHaveTextContent(
+      `/project/${project.id}/review`,
+    );
+  });
+
+  it("Save & close falls back to the card list when opened from there", async () => {
+    const user = userEvent.setup();
+    const { project, entry } = await makeFixture();
+    renderSpecies(project.id, entry.id);
+    await screen.findByTestId("common-name");
+
+    await user.click(screen.getByRole("button", { name: "Save & close" }));
+
+    await screen.findByTestId("destination-url");
+    const destination = screen.getByTestId("destination-url").textContent ?? "";
+    expect(destination).toBe(`/project/${project.id}`);
   });
 
   it("keeps a removed photo's blob in the store until the draft is saved", async () => {

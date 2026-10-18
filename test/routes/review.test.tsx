@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router";
 import userEvent from "@testing-library/user-event";
 import ReviewPage from "~/routes/review";
 import { saveProject, putFile } from "~/lib/store";
@@ -16,11 +16,18 @@ import type { PhotoSlot } from "~/lib/types";
  * renders its cards without waiting for the whole deck's blobs.
  */
 
+/** Shows where a navigation landed, so tests can assert the editor's URL. */
+function EditorProbe() {
+  const location = useLocation();
+  return <div data-testid="editor-url">{location.pathname + location.search}</div>;
+}
+
 function renderReview(id: string) {
   return render(
     <MemoryRouter initialEntries={[`/project/${id}/review`]}>
       <Routes>
         <Route path="/project/:projectId/review" element={<ReviewPage />} />
+        <Route path="/project/:projectId/species/:speciesId" element={<EditorProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -118,5 +125,23 @@ describe("review route", () => {
     });
     const messages = (await listVersions(project.id)).map((v) => v.message);
     expect(messages[0]).toContain("Autosave");
+  });
+
+  it("opens the editor with a returnTo even when no filter is active", async () => {
+    // With the default "All" filter the editor link used to carry no
+    // ?returnTo= at all, so "Save & close" dropped the curator on the deck
+    // list instead of back here.
+    const user = userEvent.setup();
+    const project = newProject("Return");
+    const species = makeSpecies({ commonName: "Oak", sciName: "Quercus", category: "plants" });
+    project.species.push(species);
+    await saveProject(project);
+
+    renderReview(project.id);
+    await user.click(await screen.findByTestId(`edit-card-${species.id}`));
+
+    expect(screen.getByTestId("editor-url")).toHaveTextContent(
+      `/project/${project.id}/species/${species.id}?returnTo=review`,
+    );
   });
 });

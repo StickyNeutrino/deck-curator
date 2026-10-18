@@ -125,11 +125,12 @@ export default function ReviewPage() {
   }, [blobLoader, headFileKeys]);
 
   // Where the editor should send the user back to: the review page with the
-  // current filter intact, or the deck list when arriving from elsewhere.
+  // current filter intact. Always set — even unfiltered — so "Save & close"
+  // returns here rather than dropping the curator on the deck list.
   const reviewReturnTo = useMemo(
     () =>
       filter === "all"
-        ? undefined
+        ? "review"
         : filter === "tag"
           ? `review?filter=tag&tag=${encodeURIComponent(tagFilter)}`
           : `review?filter=${filter}`,
