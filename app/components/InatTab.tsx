@@ -11,8 +11,9 @@ import { startJob, useJobs } from "~/lib/jobs";
 import { slugify } from "~/lib/ids";
 import { LocationPicker } from "~/components/LocationPicker";
 import type { DeckLocation } from "~/lib/types";
-import { searchSettingsOf } from "~/lib/types";
+import { searchScopeOf, searchSettingsOf } from "~/lib/types";
 import { mutateProject } from "~/lib/useProjectDoc";
+import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
 
 /** iNat iconic_taxon_id → friendly filter names (ids verified against the
  *  API: 3 Aves, 40151 Mammalia, 26036 Reptilia, 20978 Amphibia, 47178
@@ -178,9 +179,19 @@ export function InatTab({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [photosPerCard, setPhotosPerCard] = useState(3);
-  // Deck-wide iNat constraints live on the project (edited in Deck info);
-  // this tab and the photo browser both read them.
+  // The search filters (research grade, media, ordering, license following)
+  // collapse behind a disclosure — the defaults work for most searches.
+  const [showSettings, setShowSettings] = useState(false);
+  // Deck-wide iNat filters live on the project (edited here and in Deck
+  // info); this tab and the photo browser both read them.
   const searchSettings = useMemo(() => searchSettingsOf(project), [project.inatSearch]);
+  // What this search actually offers: the filters plus the license list —
+  // the deck's accepted licenses when the settings follow them, everything
+  // iNat allows when the curator unticked that.
+  const searchScope = useMemo(
+    () => searchScopeOf(project),
+    [project.inatSearch, project.licenses],
+  );
   const [resultLimit, setResultLimit] = useState<number>(30);
   const [cardsPerSpecies, setCardsPerSpecies] = useState(1);
   const [busyName, setBusyName] = useState<string | null>(null);
@@ -371,8 +382,8 @@ export function InatTab({
       let candidates = opts.run?.candidates.get(result.id);
       if (!candidates) {
         candidates = await candidatePhotos(result.id, photoScope, undefined, {
-          includeVideos: searchSettings.includeMedia,
-          settings: searchSettings,
+          includeVideos: searchScope.includeMedia,
+          settings: searchScope,
           signal: opts.signal,
         });
         opts.run?.candidates.set(result.id, candidates);
@@ -427,7 +438,7 @@ export function InatTab({
       });
       return { entry, picks: picked, base: slugify(result.name) };
     },
-    [loc, photosPerCard, searchSettings, project.id, project.categories, onChange],
+    [loc, photosPerCard, searchScope, project.id, project.categories, onChange],
   );
 
   /**
@@ -703,10 +714,10 @@ export function InatTab({
       </div>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
         Search lists the most-observed species in the circle, filed automatically into
-        Plants / Fungi / Animals from iNaturalist's taxonomy. Only photos under the deck's
-        accepted licenses are offered; every card carries the photographer credit.{" "}
+        Plants / Fungi / Animals from iNaturalist's taxonomy; every card carries the
+        photographer credit.{" "}
         <Link to={`/project/${project.id}/info`} className="underline">
-          Edit licenses &amp; filters in Deck info.
+          The deck's accepted licenses live in Deck info.
         </Link>
       </p>
       <div className="flex gap-2 items-center flex-wrap">
@@ -754,6 +765,26 @@ export function InatTab({
             <option value={3}>up to 3 (trio)</option>
           </select>
         </label>
+      </div>
+      <div className="mt-3">
+        <button
+          type="button"
+          className="text-xs underline"
+          style={{ color: "var(--muted)" }}
+          onClick={() => setShowSettings((v) => !v)}
+          data-testid="inat-settings-toggle"
+        >
+          {showSettings ? "− Hide search settings" : "+ Search settings"}
+        </button>
+        {showSettings && (
+          <div className="mt-2">
+            <InatSearchSettingsPanel
+              settings={searchSettings}
+              onChange={(next) => onChange((d) => { d.inatSearch = next; })}
+              licensesHref={`/project/${project.id}/info`}
+            />
+          </div>
+        )}
       </div>
       {error && (
         <p className="text-sm mt-2" role="alert" style={{ color: "var(--danger)" }}>

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { validateProject, missingPhotoIssues } from "~/lib/validate";
 import { newProject } from "~/lib/importSpreadsheet";
-import { DEFAULT_SEARCH_SETTINGS, makeSpecies } from "~/lib/types";
+import { makeSpecies } from "~/lib/types";
 import { putFile } from "~/lib/store";
 import type { Project } from "~/lib/types";
 
@@ -51,7 +51,7 @@ describe("deck copyright limits", () => {
     const project = fixture();
     // The deck was narrowed to sellable licenses after the photo was
     // picked — the NC-licensed card drifted out of compliance.
-    project.inatSearch = { ...DEFAULT_SEARCH_SETTINGS, licenses: ["cc0", "cc-by", "cc-by-sa"] };
+    project.licenses = ["cc0", "cc-by", "cc-by-sa"];
     const entry = makeSpecies({ commonName: "Vetch", sciName: "Vicia", category: "plants", layout: "photo-single" });
     entry.photos.push({
       id: "upload:2",
@@ -70,7 +70,7 @@ describe("deck copyright limits", () => {
 
   it("stays quiet when every photo follows the deck's limits", () => {
     const project = fixture();
-    project.inatSearch = { ...DEFAULT_SEARCH_SETTINGS, licenses: ["cc0"] };
+    project.licenses = ["cc0"];
     expect(validateProject(project)).toHaveLength(0);
   });
 

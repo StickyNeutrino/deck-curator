@@ -10,7 +10,7 @@ import { InatPhotoBrowser } from "~/components/InatPhotoBrowser";
 import { slugify, formatAltNames, parseAltNames } from "~/lib/ids";
 import { uuid } from "~/lib/uuid";
 import { photoCap, focusStyle, cropStyle, reorderPhotos } from "~/lib/cardGeometry";
-import { BORDER_STYLES, searchSettingsOf, type BorderStyle } from "~/lib/types";
+import { BORDER_STYLES, searchScopeOf, type BorderStyle } from "~/lib/types";
 import { allTags } from "~/components/TagsManager";
 import { scheduleAutoVersion, useAutoVersion } from "~/lib/useAutoVersion";
 import { withRecordLock } from "~/lib/useProjectDoc";
@@ -85,16 +85,37 @@ export default function SpeciesPage() {
     [projectId],
   );
 
-  // The photo browser reloads whenever its `settings` prop changes identity,
-  // so key the memo on the serialized settings instead of `project` (a fresh
+  // The photo browser reloads whenever its `scope` prop changes identity,
+  // so key the memo on the serialized scope instead of `project` (a fresh
   // object on every keystroke-save). JSON round-trip is exact here: the
-  // settings are plain booleans/strings/arrays.
-  const inatSearchKey = project ? JSON.stringify(searchSettingsOf(project)) : "";
-  const inatSearchSettings = useMemo(
-    () => (project ? searchSettingsOf(project) : undefined),
+  // scope is plain booleans/strings/arrays.
+  const inatSearchKey = project ? JSON.stringify(searchScopeOf(project)) : "";
+  const inatScope = useMemo(
+    () => (project ? searchScopeOf(project) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [inatSearchKey],
   );
+
+  // Deck-level search settings edited from the photo browser: a locked
+  // read-modify-write of the stored record — the draft in this editor only
+  // covers the species entry, so deck fields must go to the store directly —
+  // then the local snapshot follows so the browser re-runs its search under
+  // the new scope.
+  const updateScope = useCallback((mutate: (d: Project) => void) => {
+    void withRecordLock(projectId ?? "", async () => {
+      const current = await getProject(projectId ?? "").catch(() => undefined);
+      if (!current) return;
+      const next = structuredClone(current);
+      mutate(next);
+      try {
+        await saveProject(next);
+        setProject(next);
+        scheduleAutoVersion(next);
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }, [projectId]);
 
   const persist = useCallback(async (): Promise<Project | null> => {
     if (!draft) return null;
@@ -257,8 +278,9 @@ export default function SpeciesPage() {
       <InatPhotoBrowser
         species={draft}
         projectId={projectId ?? ""}
-        settings={inatSearchSettings}
+        scope={inatScope}
         onChange={update}
+        onScopeChange={updateScope}
       />
       {cropSlot && (
         <CropModal

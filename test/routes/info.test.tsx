@@ -132,4 +132,33 @@ describe("deck info page", () => {
       expect(after.categories.some((c) => c.id === "birds")).toBe(true);
     });
   });
+
+  it("keeps the deck's copyright limits and the iNat search settings apart", async () => {
+    const user = userEvent.setup();
+    const project = await fixture();
+    project.licenses = ["cc0", "cc-by"];
+    await saveProject({ ...project, licenses: ["cc0", "cc-by"] });
+    renderInfo(project.id);
+    await screen.findByTestId("deck-label");
+
+    // The copyright section holds the license list; the narrowed deck shows
+    // its NC checkboxes unticked there.
+    const copyright = screen.getByTestId("deck-copyright");
+    expect(copyright.querySelector('[data-testid="deck-license-cc0"]')).toBeChecked();
+    expect(copyright.querySelector('[data-testid="deck-license-cc-by-nc"]')).not.toBeChecked();
+    // The iNat search section holds the filters, tied to the deck's limits
+    // by default.
+    const search = screen.getByTestId("deck-inat-settings");
+    expect(search.querySelector('[data-testid="inat-use-deck-licenses"]')).toBeChecked();
+    expect(search.querySelector('[data-testid="inat-research-grade"]')).toBeChecked();
+    // The search settings write to the project record; the license list is
+    // not part of them.
+    await user.click(search.querySelector('[data-testid="inat-research-grade"]')!);
+    await waitFor(async () => {
+      const after = (await getProject(project.id))!;
+      expect(after.inatSearch?.researchGrade).toBe(false);
+      expect(after.inatSearch && "licenses" in after.inatSearch).toBe(false);
+      expect(after.licenses).toEqual(["cc0", "cc-by"]);
+    });
+  });
 });

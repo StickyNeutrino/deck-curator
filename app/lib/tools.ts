@@ -1,5 +1,5 @@
 import type { Project, ProjectCategory, SpeciesEntry, NativeStatus, DeckLocation } from "./types";
-import { searchSettingsOf } from "./types";
+import { searchScopeOf } from "./types";
 import { taxaRecords, nearbyPlaces, type InatConservationStatus, type InatEstablishment } from "./inat";
 import { candidatePhotos, pickDistinct, resolveTaxon } from "./resolve";
 import { acquireMediaSlot } from "./media";
@@ -414,7 +414,7 @@ export async function fillMissingPhotos(
   signal?: AbortSignal,
 ): Promise<{ project: Project; report: ToolReport }> {
   const next = structuredClone(project);
-  const settings = searchSettingsOf(next);
+  const settings = searchScopeOf(next);
   const targets = scopeOf(next, scope).filter((s) =>
     options.topUp === false ? s.photos.length === 0 : s.photos.length < photoCap(s.layout),
   );

@@ -3,36 +3,46 @@ import { Link } from "react-router";
 import type { PhotoCandidate } from "~/lib/resolve";
 import { candidatePhotos, pickDistinct } from "~/lib/resolve";
 import { acquireMediaSlot } from "~/lib/media";
-import type { InatSearchSettings, SpeciesEntry } from "~/lib/types";
+import type { InatSearchScope, Project, SpeciesEntry } from "~/lib/types";
 import { slugify } from "~/lib/ids";
 import { photoCap } from "~/lib/cardGeometry";
 import { ReplacePicker } from "~/components/ReplacePicker";
+import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
 
 /**
  * iNaturalist photo browser for one species: shows CC-licensed observation
  * photos (scoped to the deck's search settings — licenses, research grade,
  * ordering — and the project's locale when known), and lets the curator pin
  * specific photos onto the card — main or secondary. Auto-pick fills the
- * remaining slots with the best distinct-observer set.
+ * remaining slots with the best distinct-observer set. The search settings
+ * collapse behind a disclosure; edits land on the project record so the
+ * bulk-add search stays in step.
  */
 
 export function InatPhotoBrowser({
   species,
   projectId,
-  settings,
+  scope,
   onChange,
+  onScopeChange,
 }: {
   species: SpeciesEntry;
   projectId: string;
-  /** Deck search constraints (from the project); defaults apply when absent. */
-  settings?: InatSearchSettings;
+  /** The deck's search scope (from the project); defaults apply when absent. */
+  scope?: InatSearchScope;
   onChange: (f: (d: SpeciesEntry) => void) => void;
+  /** Edits the deck's search settings on the project record — provided
+   *  when the embedding page can persist them. */
+  onScopeChange?: (f: (d: Project) => void) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<PhotoCandidate[]>([]);
   const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<string | null>(null);
+  // The deck's search filters collapse behind a disclosure — the defaults
+  // work for most searches.
+  const [showSettings, setShowSettings] = useState(false);
   const query = species.sciName || species.commonName;
 
   /** Reload the candidate list. `isCurrent` lets a superseded run (species or
@@ -54,8 +64,8 @@ export function InatPhotoBrowser({
         return;
       }
       const all = await candidatePhotos(taxon.taxonId, undefined, undefined, {
-        includeVideos: settings?.includeMedia,
-        settings,
+        includeVideos: scope?.includeMedia,
+        settings: scope,
       });
       if (!isCurrent()) return;
       const found = all;
@@ -72,7 +82,7 @@ export function InatPhotoBrowser({
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [query, species.taxonId, settings]);
+  }, [query, species.taxonId, scope]);
 
   useEffect(() => {
     // Reload when the species identity or search settings change; the
@@ -81,7 +91,7 @@ export function InatPhotoBrowser({
     let cancelled = false;
     void load(() => !cancelled);
     return () => { cancelled = true; };
-  }, [species.taxonId, query, settings, load]);
+  }, [species.taxonId, query, scope, load]);
 
   const addPhoto = useCallback(
     async (cand: PhotoCandidate, replaceIndex?: number) => {
@@ -90,7 +100,7 @@ export function InatPhotoBrowser({
         const fresh = await acquireMediaSlot(cand.photo, cand.obs, {
           role: "secondary",
           base,
-          includeAnimated: settings?.includeMedia ?? false,
+          includeAnimated: scope?.includeMedia ?? false,
           projectId,
         });
         if (!fresh) {
@@ -130,7 +140,7 @@ export function InatPhotoBrowser({
         setStatus(`Could not download media: ${err instanceof Error ? err.message : err}`);
       }
     },
-    [species, projectId, onChange, settings],
+    [species, projectId, onChange, scope],
   );
 
   const autoPick = useCallback(async () => {
@@ -148,7 +158,7 @@ export function InatPhotoBrowser({
         const slot = await acquireMediaSlot(cand.photo, cand.obs, {
           role: species.photos.length === 0 ? "main" : "secondary",
           base,
-          includeAnimated: settings?.includeMedia ?? false,
+          includeAnimated: scope?.includeMedia ?? false,
           projectId,
         });
         if (!slot) continue;
@@ -164,7 +174,7 @@ export function InatPhotoBrowser({
       }
     }
     setStatus(added ? `Added ${added} media item(s).` : "Could not download any media.");
-  }, [candidates, species, projectId, onChange, settings]);
+  }, [candidates, species, projectId, onChange, scope]);
 
   const cap = photoCap(species.layout);
   const full = species.photos.length >= cap;
@@ -215,11 +225,36 @@ export function InatPhotoBrowser({
         )}
       </div>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-        Photos follow the deck's accepted licenses and filters —{" "}
+        {scope && !scope.useDeckLicenses
+          ? "Offering every license iNat allows — cards with photos outside the deck's accepted licenses are flagged on the review page. "
+          : "Photos follow the deck's accepted licenses — "}
         <Link to={`/project/${projectId}/info`} className="underline">
-          edit them in Deck info
-        </Link>. The photographer's credit is attached automatically and exported into the deck.
+          the deck's copyright limits live in Deck info
+        </Link>
+        . The photographer's credit is attached automatically and exported into the deck.
       </p>
+      {onScopeChange && scope && (
+        <div className="mb-3">
+          <button
+            type="button"
+            className="text-xs underline"
+            style={{ color: "var(--muted)" }}
+            onClick={() => setShowSettings((v) => !v)}
+            data-testid="browser-settings-toggle"
+          >
+            {showSettings ? "− Hide search settings" : "+ Search settings"}
+          </button>
+          {showSettings && (
+            <div className="mt-2">
+              <InatSearchSettingsPanel
+                settings={scope}
+                onChange={(next) => onScopeChange((d) => { d.inatSearch = next; })}
+                licensesHref={`/project/${projectId}/info`}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {status && (
         <p className="text-sm mb-2" data-testid="inat-browser-status" style={{ color: "var(--muted)" }}>
           {status}

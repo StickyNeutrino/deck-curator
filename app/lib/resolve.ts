@@ -11,7 +11,7 @@ import {
   type InatPhoto,
 } from "./inat";
 import type { PhotoCredit, PhotoSlot } from "./types";
-import { LICENSE_PREFERENCE, INAT_ALLOWED_LICENSES, type InatSearchSettings, type LicenseCode } from "./types";
+import { LICENSE_PREFERENCE, INAT_ALLOWED_LICENSES, type InatSearchScope, type LicenseCode } from "./types";
 
 /**
  * Species resolution against iNaturalist, ported from the Healthy Canyons
@@ -193,8 +193,9 @@ export async function candidatePhotos(
   excludePhotoIds?: Set<string>,
   options: {
     includeVideos?: boolean;
-    /** Deck search settings: licenses, research grade, ordering. */
-    settings?: InatSearchSettings;
+    /** The deck's search scope: filters plus the licenses this search
+     *  offers (deck-wide accepted licenses, or everything iNat allows). */
+    settings?: InatSearchScope;
     signal?: AbortSignal;
   } = {},
 ): Promise<PhotoCandidate[]> {
@@ -208,8 +209,8 @@ export async function candidatePhotos(
     radius: scope && "lat" in scope ? scope.radiusKm : undefined,
     placeId: scope && "placeId" in scope ? scope.placeId : undefined,
     qualityGrade: settings?.researchGrade ? "research" : undefined,
-    // Server-side license filter when the deck restricts licenses: fewer
-    // results wasted on photos we'd discard anyway.
+    // Server-side license filter when the search narrows the licenses:
+    // fewer results wasted on photos we'd discard anyway.
     licenses:
       licenses && licenses.length < INAT_ALLOWED_LICENSES.length
         ? licenses.join(",")

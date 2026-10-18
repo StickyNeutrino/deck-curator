@@ -31,15 +31,34 @@ export const UPLOAD_LICENSES = [...INAT_ALLOWED_LICENSES, "cc-by-nd", "cc-by-nc-
 
 export type LicenseCode = (typeof UPLOAD_LICENSES)[number];
 
-/** A deck's iNaturalist search constraints — who can use the finished deck
- *  drives which licenses are acceptable, and how strict the observations
- *  filter is. Saved on the Project so a deck remembers its rules. */
-export interface InatSearchSettings {
-  /** Acceptable iNat license codes (subset of INAT_ALLOWED_LICENSES).
-   *  Default: all of them — ND variants and unlicensed photos are never
-   *  accepted; curators narrow to exclude NC variants (per deck) when the
-   *  finished deck must be commercially sellable. */
+/** The deck's copyright limits: which photo licenses the deck accepts,
+ *  whatever the photo's source. Deck-wide on purpose — it governs iNat
+ *  photo picking, uploads, and validation alike — and separate from the
+ *  iNaturalist search filters, which only decide what the search offers. */
+export interface CopyrightSettings {
+  /** Acceptable license codes (subset of INAT_ALLOWED_LICENSES for iNat
+   *  picks; uploads may additionally be ND / all-rights-reserved, which the
+   *  accepted list never includes). Default: all of them — curators narrow
+   *  to exclude NC variants when the finished deck must be sellable. */
   licenses: LicenseCode[];
+}
+
+export const DEFAULT_COPYRIGHT: CopyrightSettings = {
+  // Every valid iNat option by default; the NC checkboxes can be unchecked
+  // per deck when the finished deck must be sellable.
+  licenses: [...INAT_ALLOWED_LICENSES],
+};
+
+/** A deck's iNaturalist search filters — how strict the observations filter
+ *  is and what the search offers. Saved on the Project so a deck remembers
+ *  its rules. */
+export interface InatSearchSettings {
+  /** When true (default) the iNat search only offers photos under the
+   *  deck's accepted licenses. When false it offers everything iNat allows
+   *  (ND variants and unlicensed photos are still never offered) — for
+   *  browsing beyond the deck's policy; the review page still flags cards
+   *  whose photos fall outside it. */
+  useDeckLicenses: boolean;
   /** Only research-grade observations (community-confirmed ID). Default on. */
   researchGrade: boolean;
   /** Include animated GIFs / video clips as candidate media. */
@@ -49,9 +68,8 @@ export interface InatSearchSettings {
 }
 
 export const DEFAULT_SEARCH_SETTINGS: InatSearchSettings = {
-  // Every valid iNat option by default; the NC checkboxes can be unchecked
-  // per deck when the finished deck must be sellable.
-  licenses: [...INAT_ALLOWED_LICENSES],
+  // Follow the deck's copyright limits by default.
+  useDeckLicenses: true,
   // Community-confirmed identifications by default.
   researchGrade: true,
   includeMedia: false,
@@ -64,6 +82,31 @@ export const DEFAULT_SEARCH_SETTINGS: InatSearchSettings = {
 /** Fill in any missing fields (older projects, partial JSON). */
 export function searchSettingsOf(project: Pick<Project, "inatSearch">): InatSearchSettings {
   return { ...DEFAULT_SEARCH_SETTINGS, ...project.inatSearch };
+}
+
+/** The deck's copyright settings with defaults filled in (older projects,
+ *  partial JSON). */
+export function copyrightOf(project: Pick<Project, "licenses">): CopyrightSettings {
+  return { ...DEFAULT_COPYRIGHT, licenses: project.licenses ?? DEFAULT_COPYRIGHT.licenses };
+}
+
+/** What one iNat search actually offers: the search filters plus the
+ *  licenses it narrows to — the deck's accepted licenses when
+ *  `useDeckLicenses` is on, everything iNat allows when it's off. */
+export interface InatSearchScope extends InatSearchSettings {
+  licenses: LicenseCode[];
+}
+
+export function searchScopeOf(
+  project: Pick<Project, "licenses" | "inatSearch">,
+): InatSearchScope {
+  const settings = searchSettingsOf(project);
+  return {
+    ...settings,
+    licenses: settings.useDeckLicenses
+      ? copyrightOf(project).licenses
+      : [...INAT_ALLOWED_LICENSES],
+  };
 }
 
 export type NativeStatus = "native" | "non-native" | "unknown";
@@ -175,10 +218,11 @@ export function referencedFileKeys(project: Pick<Project, "species">): Set<strin
 
 /** The deck's accepted photo licenses — its copyright limits, set on the
  *  Deck info tab — as a lowercase set, ready for policy checks. iNat photo
- *  picking enforces this at selection time; everything after that (uploads,
- *  photos picked under older settings) is checked against it by validation. */
-export function acceptedLicenseSet(project: Pick<Project, "inatSearch">): Set<string> {
-  return new Set(searchSettingsOf(project).licenses);
+ *  picking enforces this at selection time (unless the search was set to
+ *  browse beyond the deck's limits); everything after that (uploads, photos
+ *  picked under older settings) is checked against it by validation. */
+export function acceptedLicenseSet(project: Pick<Project, "licenses">): Set<string> {
+  return new Set(copyrightOf(project).licenses);
 }
 
 /** Distinct photo-license codes on a card that fall outside the deck's
@@ -213,7 +257,13 @@ export interface Project {
   granularity?: "standard" | "fine";
   categories: ProjectCategory[];
   species: SpeciesEntry[];
-  /** iNaturalist search constraints (licenses, quality grade, media). */
+  /** The deck's accepted photo licenses — its copyright limits, set on the
+   *  Deck info tab. Kept apart from the iNat search filters: the limits
+   *  also govern uploads and validation, while the filters only decide
+   *  what a search offers. */
+  licenses?: LicenseCode[];
+  /** iNaturalist search filters (quality grade, media, ordering, and
+   *  whether the search follows the deck's accepted licenses). */
   inatSearch?: InatSearchSettings;
   createdAt: string;
   updatedAt: string;
@@ -263,7 +313,9 @@ export function isInvasive(s: Pick<SpeciesEntry, "border">): boolean {
 }
 
 /** Migrate older project records: the boolean `invasive` tag became the
- *  border-style enum. Mutates and returns the given project. */
+ *  border-style enum, and the accepted-licenses list moved out of the iNat
+ *  search settings into the deck-wide copyright setting (it also governs
+ *  uploads and validation). Mutates and returns the given project. */
 export function migrateProject(project: Project): Project {
   for (const s of project.species) {
     const legacy = (s as unknown as { invasive?: boolean }).invasive;
@@ -271,6 +323,14 @@ export function migrateProject(project: Project): Project {
       s.border = "invasive";
     }
     delete (s as unknown as { invasive?: boolean }).invasive;
+  }
+  const legacySearch = project.inatSearch as { licenses?: LicenseCode[] } | undefined;
+  if (legacySearch?.licenses) {
+    // Keep the deck's explicit choice — only fill the new home when empty,
+    // so a re-run of the migration can't resurrect a narrowed list that the
+    // curator already widened (or vice versa).
+    if (!project.licenses) project.licenses = legacySearch.licenses;
+    delete legacySearch.licenses;
   }
   return project;
 }

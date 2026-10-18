@@ -75,7 +75,7 @@ describe("candidatePhotos video filter", () => {
     const defaults = await candidatePhotos(1);
     expect(defaults.map((c) => c.photo.id)).toEqual([1, 2, 3, 4, 5, 6]);
     const all = await candidatePhotos(1, undefined, undefined, {
-      settings: { licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: false, includeMedia: false, orderBy: "license" },
+      settings: { useDeckLicenses: true, licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: false, includeMedia: false, orderBy: "license" },
     });
     expect(all.map((c) => c.photo.id)).toEqual([4, 3, 5, 1, 6, 2]);
   });
@@ -105,20 +105,20 @@ describe("candidatePhotos video filter", () => {
     // Commercial deck: CC0/BY only. NC photo is dropped, and the server-side
     // license filter is passed through to the API call.
     const commercial = await candidatePhotos(1, undefined, undefined, {
-      settings: { licenses: ["cc0", "cc-by"], researchGrade: false, includeMedia: false, orderBy: "license" },
+      settings: { useDeckLicenses: true, licenses: ["cc0", "cc-by"], researchGrade: false, includeMedia: false, orderBy: "license" },
     });
     expect(commercial.map((c) => c.photo.id)).toEqual([3, 2]);
     expect(spy.mock.calls[0][0].licenses).toBe("cc0,cc-by");
 
     // Research-grade-only deck: casual observations are dropped client-side.
     const research = await candidatePhotos(1, undefined, undefined, {
-      settings: { licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: true, includeMedia: false, orderBy: "license" },
+      settings: { useDeckLicenses: true, licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: true, includeMedia: false, orderBy: "license" },
     });
     expect(research.map((c) => c.photo.id)).toEqual([3]);
 
     // orderBy "votes" skips the permissiveness sort.
     const voteOrder = await candidatePhotos(1, undefined, undefined, {
-      settings: { licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: false, includeMedia: false, orderBy: "votes" },
+      settings: { useDeckLicenses: true, licenses: ["cc0", "cc-by", "cc-by-sa", "cc-by-nc", "cc-by-nc-sa"], researchGrade: false, includeMedia: false, orderBy: "votes" },
     });
     expect(voteOrder.map((c) => c.photo.id)).toEqual([1, 2, 3]);
   });

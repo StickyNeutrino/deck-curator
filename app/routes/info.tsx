@@ -5,8 +5,9 @@ import { ProjectTabs } from "~/components/ProjectTabs";
 import { LocationPicker } from "~/components/LocationPicker";
 import { CategoriesManager } from "~/components/CategoriesManager";
 import { TagsManager } from "~/components/TagsManager";
+import { CopyrightSettingsPanel } from "~/components/CopyrightSettingsPanel";
 import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
-import { acceptedLicenseSet, offPolicyLicenses, searchSettingsOf } from "~/lib/types";
+import { acceptedLicenseSet, copyrightOf, offPolicyLicenses, searchSettingsOf } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
 import { useAutoVersion, cancelAutoVersion } from "~/lib/useAutoVersion";
 import { getProject, listProjects, renameProject } from "~/lib/store";
@@ -14,10 +15,10 @@ import { renameRepo } from "~/lib/versioning";
 
 /**
  * Deck info: everything about the deck itself — name and id, description,
- * its location, category taxonomy, tags, and the iNaturalist search
- * constraints (licenses, research grade) that govern photo picking
- * everywhere — kept off the card-editing screen so the map and metadata
- * don't crowd the species work.
+ * its location, category taxonomy, tags, the deck's copyright limits
+ * (accepted licenses), and the iNaturalist search filters that shape photo
+ * picking — kept off the card-editing screen so the map and metadata don't
+ * crowd the species work.
  */
 
 export function meta({}: Route.MetaArgs) {
@@ -198,11 +199,11 @@ export default function InfoPage() {
         </div>
       </section>
 
-      <section className="mb-6" data-testid="deck-inat-settings">
-        <span className="label">iNaturalist search — licenses and filters for photo picking deck-wide</span>
-        <InatSearchSettingsPanel
-          settings={searchSettingsOf(project)}
-          onChange={(next) => update((d) => { d.inatSearch = next; })}
+      <section className="mb-6" data-testid="deck-copyright">
+        <span className="label">Allowed photo licenses — the deck's copyright limits</span>
+        <CopyrightSettingsPanel
+          licenses={copyrightOf(project).licenses}
+          onChange={(next) => update((d) => { d.licenses = next; })}
         />
         {offPolicyCards > 0 && (
           <p className="text-xs mt-2" style={{ color: "var(--danger)" }} data-testid="license-policy-notice">
@@ -210,6 +211,14 @@ export default function InfoPage() {
             outside the deck's accepted licenses — the review page flags each one.
           </p>
         )}
+      </section>
+
+      <section className="mb-6" data-testid="deck-inat-settings">
+        <span className="label">iNaturalist search — filters for photo picking</span>
+        <InatSearchSettingsPanel
+          settings={searchSettingsOf(project)}
+          onChange={(next) => update((d) => { d.inatSearch = next; })}
+        />
       </section>
 
       <CategoriesManager project={project} onChange={update} />
