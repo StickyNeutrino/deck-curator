@@ -118,14 +118,6 @@ export default function ProjectPage() {
         </Link>
       </nav>
       <ProjectTabs projectId={project.id} active="cards" />
-      <p className="mt-4 text-xs" style={{ color: "var(--muted)" }}>
-        Editing <strong>{project.deckLabel}</strong> — deck-wide settings (name, description,
-        location, categories, tags) live in the{" "}
-        <Link to={`/project/${project.id}/info`} className="underline">
-          Deck info
-        </Link>{" "}
-        tab.
-      </p>
       <SpeciesTable
         project={project}
         selected={selected}
@@ -220,7 +212,7 @@ function SpeciesTable({
   );
 
   return (
-    <section>
+    <section className="mt-6">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button className="btn-primary" data-testid="add-species" onClick={onAdd}>
           + Add species

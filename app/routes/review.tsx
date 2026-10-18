@@ -185,10 +185,7 @@ export default function ReviewPage() {
       <header className="mt-6 mb-6">
         <h1 className="text-2xl font-bold">{project?.deckLabel ?? "Loading…"}</h1>
         <p className="text-sm mt-1" style={{ color: "var(--muted)" }} data-testid="review-summary">
-          {totalCount} cards — front above, back below. Click a card to edit it; flag
-          cards that need another pass with the ⚑ button, and use ⚠ Needs fixing to
-          find cards with missing photos, credits, licenses, or photos outside
-          the deck's accepted licenses.
+          Click a card to edit it.
         </p>
         <div className="flex flex-wrap items-center gap-2 mt-3" data-testid="review-filters">
           <button

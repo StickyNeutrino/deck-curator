@@ -49,6 +49,10 @@ export default function InfoPage() {
   const [idDraft, setIdDraft] = useState<string | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
+  // The "why does this field matter" explanation rides in a popover behind
+  // an ⓘ button instead of a standing paragraph — the id field looks like
+  // any other field until the day it doesn't.
+  const [showIdInfo, setShowIdInfo] = useState(false);
 
   const commitId = useCallback(async () => {
     if (!project || idDraft === null) return;
@@ -151,8 +155,33 @@ export default function InfoPage() {
             onChange={(e) => update((d) => { d.deckLabel = e.target.value; })}
           />
         </label>
-        <label className="block mb-3">
-          <span className="label">Deck id (slug)</span>
+        <div className="block relative mb-3">
+          <span className="label inline-flex items-center gap-1">
+            Deck id (slug)
+            <button
+              type="button"
+              className="cursor-pointer"
+              style={{ color: "var(--muted)" }}
+              aria-label="What is the deck id for?"
+              aria-expanded={showIdInfo}
+              onClick={() => setShowIdInfo((v) => !v)}
+              data-testid="deck-id-info"
+            >
+              ⓘ
+            </button>
+          </span>
+          {showIdInfo && (
+            <span
+              role="note"
+              className="absolute left-0 top-7 z-10 w-72 rounded-lg border bg-white p-3 text-xs shadow-lg"
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+              data-testid="deck-id-info-popover"
+            >
+              The id tells decks apart in the flashcards app, so it has to be unique. Changing
+              it moves the deck's photos and version history with it. It saves when you click
+              away or press Enter.
+            </span>
+          )}
           <input
             className="field font-mono"
             style={{ maxWidth: 320 }}
@@ -164,17 +193,12 @@ export default function InfoPage() {
             onBlur={() => void commitId()}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitId(); } }}
           />
-        </label>
+        </div>
         {identityError && (
           <p className="text-sm mb-3" role="alert" style={{ color: "var(--danger)" }} data-testid="identity-error">
             {identityError}
           </p>
         )}
-        <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-          The id tells decks apart in the flashcards app, so it has to be unique. Changing it moves
-          the deck's photos and version history with it. It saves when you click away or press
-          Enter.
-        </p>
         <label className="block">
           <span className="label">Description — shown on the credits page</span>
           <textarea

@@ -161,4 +161,19 @@ describe("deck info page", () => {
       expect(after.licenses).toEqual(["cc0", "cc-by"]);
     });
   });
+
+  it("explains the deck id behind an info button instead of a standing paragraph", async () => {
+    const user = userEvent.setup();
+    const project = await fixture();
+    renderInfo(project.id);
+    await screen.findByTestId("deck-label");
+
+    // The explanation is hidden until asked for.
+    expect(screen.queryByTestId("deck-id-info-popover")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("deck-id-info"));
+    expect(screen.getByTestId("deck-id-info-popover").textContent).toContain("tells decks apart");
+    // Asking again dismisses it.
+    await user.click(screen.getByTestId("deck-id-info"));
+    expect(screen.queryByTestId("deck-id-info-popover")).not.toBeInTheDocument();
+  });
 });
