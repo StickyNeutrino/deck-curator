@@ -1,12 +1,12 @@
 import type { Route } from "./+types/info";
 import { Link, useNavigate, useParams } from "react-router";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ProjectTabs } from "~/components/ProjectTabs";
 import { LocationPicker } from "~/components/LocationPicker";
 import { CategoriesManager } from "~/components/CategoriesManager";
 import { TagsManager } from "~/components/TagsManager";
 import { InatSearchSettingsPanel } from "~/components/InatSearchSettingsPanel";
-import { searchSettingsOf } from "~/lib/types";
+import { acceptedLicenseSet, offPolicyLicenses, searchSettingsOf } from "~/lib/types";
 import { useProjectDoc } from "~/lib/useProjectDoc";
 import { useAutoVersion, cancelAutoVersion } from "~/lib/useAutoVersion";
 import { getProject, listProjects, renameProject } from "~/lib/store";
@@ -30,6 +30,16 @@ export default function InfoPage() {
   const { project, setProject, notFound, loadError, saveError, update } = useProjectDoc(projectId);
   // Deck-info edits autosave to version history like any other tab.
   const versionError = useAutoVersion(projectId);
+
+  // Live copyright-limit check: how many cards carry photos whose license
+  // isn't covered by the deck's accepted licenses (the panel below). Shows
+  // the cost of narrowing the policy after photos were already picked —
+  // the review and export pages flag the individual cards.
+  const offPolicyCards = useMemo(() => {
+    if (!project) return 0;
+    const accepted = acceptedLicenseSet(project);
+    return project.species.filter((s) => offPolicyLicenses(s, accepted).length > 0).length;
+  }, [project]);
 
   // The deck id is the store key for the record, the photo files, and the
   // git repo — editing it per keystroke would duplicate decks and break
@@ -194,6 +204,12 @@ export default function InfoPage() {
           settings={searchSettingsOf(project)}
           onChange={(next) => update((d) => { d.inatSearch = next; })}
         />
+        {offPolicyCards > 0 && (
+          <p className="text-xs mt-2" style={{ color: "var(--danger)" }} data-testid="license-policy-notice">
+            ⚠ {offPolicyCards} card{offPolicyCards === 1 ? "" : "s"} {offPolicyCards === 1 ? "has" : "have"} photos
+            outside the deck's accepted licenses — the review page flags each one.
+          </p>
+        )}
       </section>
 
       <CategoriesManager project={project} onChange={update} />

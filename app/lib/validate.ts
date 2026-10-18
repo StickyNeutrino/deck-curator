@@ -1,4 +1,4 @@
-import type { Project } from "./types";
+import { acceptedLicenseSet, offPolicyLicenses, type Project } from "./types";
 import { listFileKeys } from "./store";
 
 /**
@@ -18,6 +18,13 @@ export interface ExportIssue {
 
 export function validateProject(project: Project): ExportIssue[] {
   const issues: ExportIssue[] = [];
+  // The deck's accepted photo licenses (Deck info tab) are its copyright
+  // limits. iNat picking enforces them at selection time, but cards drift:
+  // photos picked before the settings were narrowed, and uploads — which
+  // may be ND or all-rights-reserved, licenses the accepted list never
+  // includes. Nothing breaks at export; the flag keeps the deck's stated
+  // copyright limits honest before it's shared.
+  const accepted = acceptedLicenseSet(project);
   const names = new Map<string, number>();
   for (const s of project.species) {
     const key = (s.commonName || s.sciName).trim();
@@ -64,6 +71,23 @@ export function validateProject(project: Project): ExportIssue[] {
       if (!p.credit.license) {
         issues.push({ severity: "error", message: `${label}: a photo has no license — every photo needs one for the credits page.`, species: label, speciesId: s.id });
       }
+    }
+    // Copyright limits: one notice per card, naming each license that
+    // isn't covered by the deck's accepted-licenses setting. All-rights-
+    // reserved photos get their own advice — they can never be added to
+    // the accepted list, so "widen the setting" is not a way out.
+    const offPolicy = offPolicyLicenses(s, accepted);
+    if (offPolicy.length) {
+      const list = offPolicy.map((code) => `“${code}”`).join(", ");
+      const fix = offPolicy.includes("all-rights-reserved")
+        ? "all-rights-reserved photos can't be redistributed with the deck — relicense the upload in the credit editor or replace the photo"
+        : "replace the photo or widen the deck's accepted licenses on the Deck info tab";
+      issues.push({
+        severity: "warning",
+        message: `${label}: photo license${offPolicy.length > 1 ? "s" : ""} ${list} ${offPolicy.length > 1 ? "are" : "is"} outside the deck's accepted licenses — ${fix}.`,
+        species: label,
+        speciesId: s.id,
+      });
     }
     if (!s.category || !project.categories.some((c) => c.id === s.category)) {
       issues.push({ severity: "error", message: `${label}: not assigned to a category.`, species: label, speciesId: s.id });

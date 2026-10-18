@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { validateProject, missingPhotoIssues } from "~/lib/validate";
 import { newProject } from "~/lib/importSpreadsheet";
-import { makeSpecies } from "~/lib/types";
+import { DEFAULT_SEARCH_SETTINGS, makeSpecies } from "~/lib/types";
 import { putFile } from "~/lib/store";
 import type { Project } from "~/lib/types";
 
@@ -43,6 +43,70 @@ describe("validateProject", () => {
     expect(messages).toMatch(/neither a common nor a scientific name/);
     expect(messages).toMatch(/no license/);
     expect(messages).toMatch(/not assigned to a category/);
+  });
+});
+
+describe("deck copyright limits", () => {
+  it("flags photos whose license falls outside the deck's accepted licenses", () => {
+    const project = fixture();
+    // The deck was narrowed to sellable licenses after the photo was
+    // picked — the NC-licensed card drifted out of compliance.
+    project.inatSearch = { ...DEFAULT_SEARCH_SETTINGS, licenses: ["cc0", "cc-by", "cc-by-sa"] };
+    const entry = makeSpecies({ commonName: "Vetch", sciName: "Vicia", category: "plants", layout: "photo-single" });
+    entry.photos.push({
+      id: "upload:2",
+      role: "main",
+      credit: { observer: "joodles", license: "cc-by-nc" },
+      fileKey: "vetch.jpg",
+    });
+    project.species.push(entry);
+
+    const issues = validateProject(project).filter((i) => i.speciesId === entry.id);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].message).toMatch(/“cc-by-nc”/);
+    expect(issues[0].message).toMatch(/accepted licenses/);
+  });
+
+  it("stays quiet when every photo follows the deck's limits", () => {
+    const project = fixture();
+    project.inatSearch = { ...DEFAULT_SEARCH_SETTINGS, licenses: ["cc0"] };
+    expect(validateProject(project)).toHaveLength(0);
+  });
+
+  it("notices all-rights-reserved uploads with their own advice", () => {
+    const project = fixture();
+    const entry = makeSpecies({ commonName: "Sage", sciName: "Salvia", category: "plants", layout: "photo-single" });
+    entry.photos.push({
+      id: "upload:3",
+      role: "main",
+      credit: { observer: "Ann Memo", license: "all-rights-reserved" },
+      fileKey: "sage.jpg",
+    });
+    project.species.push(entry);
+
+    const issues = validateProject(project).filter((i) => i.speciesId === entry.id);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].message).toMatch(/all-rights-reserved/);
+    expect(issues[0].message).toMatch(/relicense/);
+  });
+
+  it("leaves empty licenses to the missing-license error", () => {
+    // The policy check must not double-report what the no-license error
+    // already covers.
+    const project = fixture();
+    const entry = makeSpecies({ commonName: "Fern", sciName: "Polypodium", category: "plants", layout: "photo-single" });
+    entry.photos.push({
+      id: "upload:4",
+      role: "main",
+      credit: { observer: "joodles", license: "" },
+      fileKey: "fern.jpg",
+    });
+    project.species.push(entry);
+    const issues = validateProject(project).filter((i) => i.speciesId === entry.id);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toMatch(/no license/);
   });
 });
 

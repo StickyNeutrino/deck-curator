@@ -187,7 +187,8 @@ export default function ReviewPage() {
         <p className="text-sm mt-1" style={{ color: "var(--muted)" }} data-testid="review-summary">
           {totalCount} cards — front above, back below. Click a card to edit it; flag
           cards that need another pass with the ⚑ button, and use ⚠ Needs fixing to
-          find cards with missing photos, credits, or licenses.
+          find cards with missing photos, credits, licenses, or photos outside
+          the deck's accepted licenses.
         </p>
         <div className="flex flex-wrap items-center gap-2 mt-3" data-testid="review-filters">
           <button
@@ -201,7 +202,7 @@ export default function ReviewPage() {
             className={`btn text-sm ${filter === "issues" ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setFilter("issues")}
             data-testid="filter-issues"
-            title="Cards with missing photos, credits, licenses, or categories"
+            title="Cards with missing photos, credits, licenses, categories, or photos outside the deck's accepted licenses"
           >
             ⚠ Needs fixing ({issueCards})
           </button>

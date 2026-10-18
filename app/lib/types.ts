@@ -173,6 +173,26 @@ export function referencedFileKeys(project: Pick<Project, "species">): Set<strin
   return keys;
 }
 
+/** The deck's accepted photo licenses — its copyright limits, set on the
+ *  Deck info tab — as a lowercase set, ready for policy checks. iNat photo
+ *  picking enforces this at selection time; everything after that (uploads,
+ *  photos picked under older settings) is checked against it by validation. */
+export function acceptedLicenseSet(project: Pick<Project, "inatSearch">): Set<string> {
+  return new Set(searchSettingsOf(project).licenses);
+}
+
+/** Distinct photo-license codes on a card that fall outside the deck's
+ *  accepted licenses, in photo order. Empty credits are skipped — the
+ *  missing-license validation covers those on its own. */
+export function offPolicyLicenses(s: SpeciesEntry, accepted: Set<string>): string[] {
+  const codes: string[] = [];
+  for (const p of s.photos) {
+    const code = p.credit.license.trim().toLowerCase();
+    if (code && !accepted.has(code) && !codes.includes(code)) codes.push(code);
+  }
+  return codes;
+}
+
 export interface ProjectCategory {
   id: string;
   label: string;
