@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Project } from "./types";
+import { isStorageFullError } from "./browserStorage";
 import { commitDeckVersion } from "./versioning";
 
 /**
@@ -133,7 +134,14 @@ export function useAutoVersion(
       if (event.projectId !== projectId) return;
       if (event.type === "failed") {
         const detail = event.error instanceof Error ? event.error.message : String(event.error);
-        setVersionError(`Version autosave failed: ${detail}`);
+        // Storage-full failures read like a bug in their raw form (Firefox's
+        // post-quota cleanup error never mentions space) — say what actually
+        // happened and that nothing already saved is at risk.
+        setVersionError(
+          isStorageFullError(event.error)
+            ? "Version autosave failed: browser storage is full. Versions already saved are safe — free up disk space and autosave resumes on the next edit."
+            : `Version autosave failed: ${detail}`,
+        );
       } else if (event.type === "saved") {
         setVersionError(null);
       } else {

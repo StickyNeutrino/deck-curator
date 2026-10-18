@@ -6,9 +6,11 @@ import {
   Scripts,
   ScrollRestoration,
 } from "react-router";
+import { useEffect } from "react";
 
 import type { Route } from "./+types/root";
 import { JobsDock } from "~/components/JobsDock";
+import { requestPersistentStorage } from "~/lib/browserStorage";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/400-italic.css";
 import "@fontsource/inter/500.css";
@@ -50,6 +52,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Best-effort, once per session: ask the browser to keep this site's
+  // databases (decks, photos, version history) under storage pressure
+  // instead of evicting them. See lib/browserStorage.
+  useEffect(() => {
+    requestPersistentStorage();
+  }, []);
   return (
     <>
       <Outlet />

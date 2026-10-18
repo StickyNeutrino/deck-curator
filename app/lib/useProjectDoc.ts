@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getProject, saveProject, withRecordLock } from "./store";
 import { scheduleAutoVersion } from "./useAutoVersion";
+import { isStorageFullError } from "./browserStorage";
 import type { Project } from "./types";
 
 /** `update` of each project page currently mounted, by project id. */
@@ -219,7 +220,13 @@ export function useProjectDoc(projectId: string | undefined) {
           // failure means their last edits exist only on this screen.
           dirtyRef.current = true; // retry, or the next edit
           console.error("Autosave failed:", err);
-          setSaveError(`Couldn't save: ${err instanceof Error ? err.message : err}`);
+          // Storage-full failures read like a bug in their raw form — name
+          // the real cause and be honest that unsaved edits are at risk.
+          setSaveError(
+            isStorageFullError(err)
+              ? "Couldn't save: browser storage is full. Free up disk space; until a save lands, your latest edits exist only on this screen."
+              : `Couldn't save: ${err instanceof Error ? err.message : err}`,
+          );
         }
         if (attempt >= saveRetry.attempts || latestRef.current !== project) return;
         await new Promise((resolve) => setTimeout(resolve, saveRetry.delayMs));
