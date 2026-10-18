@@ -1,11 +1,45 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { getProject, saveProject, withRecordLock } from "./store";
 import { scheduleAutoVersion } from "./useAutoVersion";
+import { isRestoring } from "./versioning";
 import { isStorageFullError } from "./browserStorage";
 import type { Project } from "./types";
 
 /** `update` of each project page currently mounted, by project id. */
 const liveUpdaters = new Map<string, (mutate: (draft: Project) => void) => void>();
+
+/** Base stamp per page snapshot: the `updatedAt` the store had when the
+ *  snapshot's content was current. A snapshot inherits its base from the
+ *  state it was cloned from; after a successful save the base becomes the
+ *  stamp just written (the store then holds exactly that content). A save
+ *  whose stored stamp differs from its snapshot's base means the record
+ *  changed underneath the page (a version restore, another tab, a direct
+ *  job write) — writing the snapshot back would clobber the newer state,
+ *  so the save skips.
+ *
+ *  The base is stored as a parent CHAIN, resolved lazily: a snapshot
+ *  created while the previous save is still in flight must inherit the
+ *  stamp that save will land, not the older stamp still valid at clone
+ *  time. Each entry is either the stamp of the save that made the store
+ *  hold this snapshot's content, or the parent snapshot it descends from.
+ *  Keyed per snapshot object: adopting a fresh record into state must not
+ *  retroactively "validate" an older queued snapshot. */
+type SnapshotBase = string | { parent: Project };
+const snapshotBases = new WeakMap<Project, SnapshotBase>();
+
+function baseStampOf(snapshot: Project): string {
+  let current: Project = snapshot;
+  for (;;) {
+    const base = snapshotBases.get(current);
+    if (base === undefined) return current.updatedAt;
+    if (typeof base === "string") return base;
+    current = base.parent;
+  }
+}
+
+function adoptSnapshot(snapshot: Project): void {
+  snapshotBases.set(snapshot, snapshot.updatedAt);
+}
 
 /** Re-exported so existing import sites keep working; the lock lives in
  *  store.ts now so version restore can join it (see withRecordLock there). */
@@ -21,10 +55,17 @@ export const saveRetry = { attempts: 3, delayMs: 4_000 };
  * deck is open, the edit goes through its page so the page state and autosave
  * stay in sync; otherwise the stored record is edited directly, so a job keeps
  * landing its work after the curator navigates away.
+ *
+ * While a version restore is in flight the live page is bypassed on purpose:
+ * the page's snapshot is about to be replaced by the restored record, and a
+ * whole-record save built on the pre-restore snapshot would queue behind the
+ * restore's record lock and land after the swap — reverting the restore and
+ * referencing files the restore just removed. Direct writes wait on that same
+ * lock instead, re-read the restored record, and land on top of it.
  */
 export async function mutateProject(projectId: string, mutate: (draft: Project) => void): Promise<void> {
   const live = liveUpdaters.get(projectId);
-  if (live) {
+  if (live && !isRestoring(projectId)) {
     live(mutate);
     return;
   }
@@ -33,8 +74,8 @@ export async function mutateProject(projectId: string, mutate: (draft: Project) 
 
 /** Direct read-modify-write of the stored record, under the record lock —
  *  the path a job takes when no page has the deck open (or the page's load
- *  failed, see useProjectDoc). A missing record is a no-op: deleted decks
- *  must not resurrect. */
+ *  failed, or a version restore is in flight — see mutateProject). A missing
+ *  record is a no-op: deleted decks must not resurrect. */
 async function mutateStored(projectId: string, mutate: (draft: Project) => void): Promise<void> {
   await withRecordLock(projectId, async () => {
     const current = await getProject(projectId);
@@ -87,6 +128,10 @@ export function useProjectDoc(projectId: string | undefined) {
       if (!current) return current;
       const draft = structuredClone(current);
       mutate(draft);
+      // The new snapshot descends from the current one: its base resolves
+      // lazily through the parent, so a save of the parent that lands after
+      // this clone still counts as this snapshot's base.
+      snapshotBases.set(draft, { parent: current });
       return draft;
     });
   }, []);
@@ -129,6 +174,8 @@ export function useProjectDoc(projectId: string | undefined) {
         const queued = queuedRef.current;
         queuedRef.current = [];
         if (p) {
+          // This page's snapshot is based on the record as it is right now.
+          adoptSnapshot(p);
           if (queued.length > 0) {
             // Apply the edits that arrived during the load to the record as
             // loaded, in arrival order — the save effect then persists them
@@ -140,6 +187,7 @@ export function useProjectDoc(projectId: string | undefined) {
                 draft = structuredClone(draft);
                 mutate(draft);
               }
+              snapshotBases.set(draft, { parent: p });
               return draft;
             });
           } else {
@@ -195,25 +243,54 @@ export function useProjectDoc(projectId: string | undefined) {
       // closes the tab before editing again, so it is retried after a short
       // pause, a bounded number of times. A retry stops the moment a newer
       // edit exists — that edit's own effect run owns saving from there —
-      // and can never regress the store: IndexedDB serializes overlapping
-      // writes in issuance order, and the newest state is always issued
-      // before an older retry's.
+      // and can never regress the store: every attempt (first or retry)
+      // re-checks, inside the record lock, that the stored record is still
+      // the base this snapshot was built on.
       for (let attempt = 1; ; attempt++) {
         try {
-          // The save joins the record lock and re-checks the record's
-          // existence first: a rename that completed while this state sat
-          // unsaved has moved the record — writing it back under the old id
-          // would resurrect it as a duplicate deck. (A deletion is skipped
-          // the same way.)
-          let landed = true;
+          let outcome: "saved" | "missing" | "stale" = "saved";
           await withRecordLock(project.id, async () => {
-            if (!(await getProject(project.id))) {
-              landed = false;
+            const stored = await getProject(project.id);
+            if (!stored) {
+              outcome = "missing";
               return;
             }
-            await saveProject(project);
+            if (stored.updatedAt !== baseStampOf(project)) {
+              outcome = "stale";
+              return;
+            }
+            // The stamp is issued here so this snapshot's base becomes the
+            // record just written — the exact base the next save's
+            // freshness check compares against.
+            const stamp = new Date().toISOString();
+            await saveProject(project, stamp);
+            snapshotBases.set(project, stamp);
           });
-          if (landed) setSaveError(null);
+          if (outcome === "saved") {
+            setSaveError(null);
+            return;
+          }
+          if (outcome === "missing") {
+            setSaveError("This deck no longer exists — your latest edits couldn't be saved.");
+            return;
+          }
+          // The record changed underneath the page. Surface it honestly and
+          // follow the store when nothing is mid-edit; a dirty page keeps
+          // its edits (its next save re-checks) instead of silently losing
+          // them to a re-sync.
+          setSaveError(
+            "This deck changed on disk — a version restore or another tab saved it. " +
+              "Reload the deck to keep editing; your unsaved changes on this page couldn't be saved.",
+          );
+          try {
+            const fresh = await getProject(project.id);
+            if (fresh && !dirtyRef.current) {
+              adoptSnapshot(fresh);
+              setProject(fresh);
+            }
+          } catch {
+            // The saveError above already says what happened.
+          }
           return;
         } catch (err) {
           // A console line isn't enough for the curator — a silent autosave
@@ -235,5 +312,27 @@ export function useProjectDoc(projectId: string | undefined) {
     })();
   }, [project]);
 
-  return { project, setProject, notFound, loadError, saveError, update };
+  // Direct store writes can land while this page sits open — a background
+  // job's write during a version restore bypasses the live updater on
+  // purpose (see mutateProject). The page learns of them through its next
+  // save's freshness check: that write skips when the stored stamp moved
+  // on, surfaces it, and re-syncs the page from the store when nothing is
+  // mid-edit. (A standing subscription re-fetching on every record write
+  // raced rapid typing — it could adopt a stale fetch over newer
+  // keystrokes — so re-syncing is bound to the freshness check instead.)
+
+  // Externally provided records (a restore's result, the record at a
+  // renamed id) become the page's new base: their stamp is what the next
+  // save's freshness check must compare against.
+  const setProjectAdopting = useCallback(
+    (value: SetStateAction<Project | null>) => {
+      if (value && typeof value === "object" && typeof (value as Project).updatedAt === "string") {
+        adoptSnapshot(value as Project);
+      }
+      setProject(value);
+    },
+    [setProject],
+  );
+
+  return { project, setProject: setProjectAdopting, notFound, loadError, saveError, update };
 }

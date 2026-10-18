@@ -13,6 +13,7 @@ import { blobToArrayBuffer } from "./blobUtils";
  */
 
 interface ManifestPhoto {
+  id?: string;
   file: string;
   role?: string;
   alt?: string;
@@ -90,14 +91,24 @@ function cropFromManifest(value: unknown): { x: number; y: number; w: number; h:
 }
 
 /** Manifest photo → slot; null when the entry is unusable (not an object,
- *  or no file path to store bytes under). */
+ *  or no file path to store bytes under). A manifest-provided stable slot
+ *  id (`id`) is kept when unique — it preserves the iNat link that the
+ *  light-deck exporter maps by slot id across an archive round trip. */
 function slotFromManifest(
   photo: ManifestPhoto,
   uniqueSlotId: (file: string) => string,
+  slotFiles: Map<string, string>,
 ): PhotoSlot | null {
   if (typeof photo.file !== "string" || photo.file === "") return null;
+  let slotId: string;
+  if (typeof photo.id === "string" && photo.id !== "" && !slotFiles.has(photo.id)) {
+    slotId = photo.id;
+  } else {
+    slotId = uniqueSlotId(photo.file);
+  }
+  slotFiles.set(slotId, photo.file);
   const slot: PhotoSlot = {
-    id: uniqueSlotId(photo.file),
+    id: slotId,
     role: photo.role === "secondary" ? "secondary" : "main",
     credit: {
       observer: photo.credit?.observer ?? "unknown",
@@ -126,6 +137,23 @@ function slotFromManifest(
   return slot;
 }
 
+/** The deck's categories, rebuilt from a manifest: entries that aren't
+ *  objects or have no usable id are dropped (the importer must never
+ *  manufacture `undefined` keys), duplicate ids keep their first label —
+ *  duplicates would otherwise emit the same species list under each copy
+ *  on re-export, breaking the manifest's deck-wide unique-name contract. */
+function categoriesFromManifest(value: unknown): Array<{ id: string; label: string }> {
+  const list = Array.isArray(value) ? value : [];
+  const out = new Map<string, string>();
+  for (const entry of list) {
+    if (!isRecord(entry)) continue;
+    const { id, label } = entry as { id?: unknown; label?: unknown };
+    if (typeof id !== "string" || id === "") continue;
+    if (!out.has(id)) out.set(id, typeof label === "string" ? label : id);
+  }
+  return [...out].map(([id, label]) => ({ id, label }));
+}
+
 /** Manifest → species mapping (pure, testable). Photo fileKeys are left
  *  empty — the archive importer fills them when it stores each blob. Slot
  *  ids carry the manifest file (the archive importer parses it back out)
@@ -137,12 +165,12 @@ function slotFromManifest(
 export function speciesFromManifest(manifest: Manifest): {
   species: SpeciesEntry[];
   categories: Array<{ id: string; label: string }>;
+  slotFiles: Map<string, string>;
 } {
   const categoriesIn = Array.isArray(manifest.categories) ? manifest.categories : [];
-  const categories = categoriesIn
-    .filter(isRecord)
-    .map((c) => ({ id: c.id as string, label: c.label as string }));
+  const categories = categoriesFromManifest(categoriesIn);
   const species: SpeciesEntry[] = [];
+  const slotFiles = new Map<string, string>();
   const usedSlotIds = new Set<string>();
   const uniqueSlotId = (manifestFile: string): string => {
     let id = `import:${manifestFile}`;
@@ -153,6 +181,10 @@ export function speciesFromManifest(manifest: Manifest): {
   for (const category of categoriesIn) {
     if (!isRecord(category)) continue;
     const cat = category as unknown as { id: string; label: string; cards: ManifestCard[] };
+    // A category without a usable id can't key its cards — they land in the
+    // importer's catch-all "" group instead of carrying an undefined id
+    // that would never match a category on re-export.
+    const categoryId = typeof cat.id === "string" ? cat.id : "";
     const cards = Array.isArray(cat.cards) ? cat.cards : [];
     for (const card of cards) {
       if (!isRecord(card)) continue;
@@ -160,7 +192,7 @@ export function speciesFromManifest(manifest: Manifest): {
       const photos: PhotoSlot[] = (Array.isArray(c.photos) ? c.photos : [])
         .filter((p): p is ManifestPhoto => isRecord(p))
         .flatMap((p) => {
-          const slot = slotFromManifest(p, uniqueSlotId);
+          const slot = slotFromManifest(p, uniqueSlotId, slotFiles);
           return slot ? [slot] : [];
         });
       // Variant cards export names like "Name (2)"; the clean species name is
@@ -175,7 +207,7 @@ export function speciesFromManifest(manifest: Manifest): {
             : "none";
       species.push(
         makeSpecies({
-          category: cat.id,
+          category: categoryId,
           commonName: cleanName,
           sciName: c.sciName ?? "",
           altNames: Array.isArray(c.altNames) ? c.altNames : [],
@@ -193,7 +225,7 @@ export function speciesFromManifest(manifest: Manifest): {
       );
     }
   }
-  return { species, categories };
+  return { species, categories, slotFiles };
 }
 
 export async function importDeckArchive(
@@ -217,6 +249,11 @@ export async function importDeckArchive(
   } catch {
     throw new Error(`"${file.name}" has an unreadable manifest.json.`);
   }
+  // JSON.parse accepts scalars: a manifest of `null` would crash the
+  // field checks below with a raw TypeError instead of a useful message.
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`"${file.name}" has an unreadable manifest.json.`);
+  }
   if (!manifest.id || !Array.isArray(manifest.categories)) {
     throw new Error(`"${file.name}" is not a deck archive (manifest is missing id/categories).`);
   }
@@ -237,21 +274,25 @@ export async function importDeckArchive(
     opts.existingIds ?? [],
   );
   const now = new Date().toISOString();
+  const isStr = (v: unknown): v is string => typeof v === "string";
+  const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  const loc = isRecord(manifest.location) ? manifest.location : undefined;
+  const label = isStr(manifest.label) && manifest.label.trim() ? manifest.label : deckId;
   const project: Project = {
     schemaVersion: 1,
     id: deckId,
-    name: manifest.label ?? deckId,
-    deckLabel: manifest.label ?? deckId,
-    description: manifest.description ?? "",
-    location: manifest.location
+    name: label,
+    deckLabel: label,
+    description: isStr(manifest.description) ? manifest.description : "",
+    location: loc
       ? {
-          name: manifest.location.name,
-          lat: manifest.location.lat,
-          lng: manifest.location.lng,
-          radiusKm: manifest.location.radiusKm,
+          name: isStr(loc.name) && loc.name.trim() ? loc.name : undefined,
+          lat: isNum(loc.lat) ? loc.lat : undefined,
+          lng: isNum(loc.lng) ? loc.lng : undefined,
+          radiusKm: isNum(loc.radiusKm) ? loc.radiusKm : undefined,
         }
       : undefined,
-    categories: (manifest.categories ?? []).map((c) => ({ id: c.id, label: c.label })),
+    categories: categoriesFromManifest(manifest.categories),
     species: [],
     createdAt: now,
     updatedAt: now,
@@ -261,13 +302,14 @@ export async function importDeckArchive(
     try { return decodeURIComponent(name); } catch { return name; }
   };
   const usedFileKeys = new Set<string>();
-  const { species } = speciesFromManifest(manifest);
+  const { species, slotFiles } = speciesFromManifest(manifest);
 
   for (const entry of species) {
     for (const slot of entry.photos) {
-      // Slot ids deduplicated with a `#n` suffix (one card referencing the
-      // same file twice) — strip it to find the archive entry.
-      const manifestFile = slot.id.slice("import:".length).replace(/#\d+$/, "");
+      // Slot ids carrying a manifest-provided id are mapped explicitly; the
+      // `import:<file>` scheme (with optional `#n` dedupe suffix) is parsed
+      // back out for legacy slots.
+      const manifestFile = slotFiles.get(slot.id) ?? slot.id.slice("import:".length).replace(/#\d+$/, "");
       const raw = entries[manifestFile] ?? entries[decode(manifestFile)];
       const base = manifestFile.split("/").pop() ?? "photo.jpg";
       let fileKey = base;
@@ -294,6 +336,16 @@ export async function importDeckArchive(
       }
     }
     project.species.push(entry);
+  }
+
+  // Every category id referenced by the imported cards must exist in the
+  // project's category list: buildManifest filters species by category id,
+  // so a dangling reference would silently drop the card on re-export.
+  const referencedCats = new Set(project.species.map((s) => s.category));
+  for (const cid of referencedCats) {
+    if (!project.categories.some((c) => c.id === cid)) {
+      project.categories.push({ id: cid, label: cid || "Uncategorized" });
+    }
   }
 
   // The archive doubles as a git repository (export ships .git/) — restore

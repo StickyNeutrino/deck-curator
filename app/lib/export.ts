@@ -138,6 +138,10 @@ export function cardFromSpecies(
       ? { url: opts.remoteUrls!.get(p.id) }
       : { file: `photos/${p.fileKey}` };
     return {
+      // Stable slot id, so an archive round trip keeps the light-deck
+      // remote-source mapping (backfillPhotoUrls keys by slot id) instead
+      // of re-iding every slot as "import:<file>" and losing the iNat link.
+      id: p.id,
       ...media,
       role: p.role,
       alt: p.alt,
@@ -185,7 +189,23 @@ function round2(n: number): number {
 }
 
 function roundCrop(c: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } {
-  return { x: round2(c.x), y: round2(c.y), w: round2(c.w), h: round2(c.h) };
+  // Rounding must never invalidate a valid window: rounding can push x+w
+  // past 1 (e.g. x=0.996 → 1.0 with w=0.005 → 0.01) or shrink w/h to 0,
+  // and cropFromManifest on re-import would silently drop the crop. Clamp
+  // after rounding so the shipped window stays inside 0..1 with nonzero size.
+  let x = round2(c.x);
+  let y = round2(c.y);
+  let w = round2(c.w);
+  let h = round2(c.h);
+  if (w <= 0) w = 0.01;
+  if (h <= 0) h = 0.01;
+  // Clamp only genuine overflows; float noise (1 - 0.8 = 0.19999…) must not
+  // nudge an already-valid window.
+  if (x + w > 1 + 1e-9) x = Math.max(1 - w, 0);
+  if (y + h > 1 + 1e-9) y = Math.max(1 - h, 0);
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  return { x, y, w, h };
 }
 
 /** Manifest + photo bytes (compress optional) — what a playable deck ships,

@@ -517,13 +517,33 @@ export async function listVersions(projectId: string, depth = 50): Promise<Versi
  *  The restored project keeps the LIVE deck id — history may predate an id
  *  rename, and saving the historical id would recreate the record/file
  *  mismatch the rename migration exists to prevent. */
+/** Project ids with a version restore currently in flight. While a restore
+ *  runs, useProjectDoc routes background-job writes around the live page:
+ *  the page's snapshot is about to be replaced by the restored record, and a
+ *  whole-record save built on the pre-restore snapshot would queue behind
+ *  the restore's record lock and land after the swap — reverting the
+ *  restore and referencing files the restore just removed. Direct writes
+ *  wait on that same lock instead, re-read the restored record, and land on
+ *  top of it. */
+const restoringNow = new Set<string>();
+
+/** True while a version restore for the project is in flight. */
+export function isRestoring(projectId: string): boolean {
+  return restoringNow.has(projectId);
+}
+
 export async function restoreVersion(
   projectId: string,
   oid: string,
 ): Promise<{ project: Project } | null> {
-  return withProjectLock(projectId, () =>
-    withRecordLock(projectId, () => restoreVersionUnlocked(projectId, oid)),
-  );
+  restoringNow.add(projectId);
+  try {
+    return await withProjectLock(projectId, () =>
+      withRecordLock(projectId, () => restoreVersionUnlocked(projectId, oid)),
+    );
+  } finally {
+    restoringNow.delete(projectId);
+  }
 }
 
 async function restoreVersionUnlocked(

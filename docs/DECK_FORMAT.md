@@ -87,6 +87,7 @@ pre-rendered JPGs) — they keep working exactly as before.
   "photos": [
     {
       "file": "photos/dwarf-nettle-main.jpg",  // relative to the archive root, URL-encoded when served
+      "id": "inat:149532901",                  // optional stable slot id (Deck Curator round trip; keeps the remote-source link of iNat picks)
       "role": "main",                          // "main" | "secondary"
       "alt": "Flowering stalk, close-up",      // optional alt text
       "crop": { "x": 0.1, "y": 0, "w": 0.6, "h": 0.8 },  // optional crop window (0..1) over the source photo; omitted = automatic cover

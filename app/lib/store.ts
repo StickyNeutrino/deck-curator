@@ -204,15 +204,21 @@ export async function restoreSnapshot(
 
 export async function deleteProject(id: string): Promise<void> {
   const database = await db();
-  const keys = (await database.getAllKeys("files")) as string[];
-  const doomed = keys.filter((k) => k.startsWith(`${id}/`));
-  // The record and its files go in one transaction, like rename/restore: a
-  // failure must not leave a half-deleted deck behind.
-  const tx = database.transaction(["projects", "files"], "readwrite");
-  tx.objectStore("projects").delete(id);
-  const files = tx.objectStore("files");
-  for (const k of doomed) files.delete(k);
-  await tx.done;
+  // The move takes the record lock, like rename/restore: a page save or job
+  // write queued behind this deletion re-checks the record inside the lock,
+  // finds it gone, and skips — otherwise the writer's whole-record put would
+  // land after the delete and resurrect the deck with every photo gone.
+  await withRecordLock(id, async () => {
+    const keys = (await database.getAllKeys("files")) as string[];
+    const doomed = keys.filter((k) => k.startsWith(`${id}/`));
+    // The record and its files go in one transaction, like rename/restore: a
+    // failure must not leave a half-deleted deck behind.
+    const tx = database.transaction(["projects", "files"], "readwrite");
+    tx.objectStore("projects").delete(id);
+    const files = tx.objectStore("files");
+    for (const k of doomed) files.delete(k);
+    await tx.done;
+  });
   dropCachedBlobs(`${id}/`);
   notifyFileChange(id, null);
   notifyProjectChange(id);
