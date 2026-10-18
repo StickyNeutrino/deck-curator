@@ -6,5 +6,6 @@ export default [
   route("project/:projectId/info", "routes/info.tsx"),
   route("project/:projectId/species/:speciesId", "routes/species.tsx"),
   route("project/:projectId/review", "routes/review.tsx"),
+  route("project/:projectId/history", "routes/history.tsx"),
   route("project/:projectId/export", "routes/export.tsx"),
 ] satisfies RouteConfig;

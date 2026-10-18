@@ -1,27 +1,25 @@
 import type { Route } from "./+types/export";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { getProject, onProjectChange } from "~/lib/store";
 import type { Project } from "~/lib/types";
 import { exportProjectFile, exportDeckFile, exportLightDeck } from "~/lib/export";
 import { SHRINK_PRESETS, type ShrinkPreset } from "~/lib/imageShrink";
 import { validateProject, missingPhotoIssues, type ExportIssue } from "~/lib/validate";
-import { ensureRepo, isAutosaveCommit, listVersions, restoreVersion, commitDeckVersion, type VersionInfo } from "~/lib/versioning";
-import { getAuthor } from "~/lib/author";
-import { useAutoVersion, AUTO_VERSION_DEBOUNCE_MS, cancelAutoVersion } from "~/lib/useAutoVersion";
-import { AuthorPromptModal } from "~/components/AuthorPromptModal";
+import { listVersions, type VersionInfo } from "~/lib/versioning";
+import { useAutoVersion } from "~/lib/useAutoVersion";
 import { startJob, registerJobDownload } from "~/lib/jobs";
 import { openJobsPanel } from "~/components/JobsDock";
 import { ProjectTabs } from "~/components/ProjectTabs";
 
 /**
- * Pre-export review: a validation report (names, photos, credits, licensing),
- * the git version history with restore, and the three export artifacts
- * (project file, deck file, light deck). Each export runs as a background
- * job — the Jobs dock tracks progress (reading and re-encoding photos,
- * resolving remote sources) and offers the produced file again if the
- * browser's download didn't land. Deck identity (id, label) is edited on
- * the Deck info tab.
+ * Export: the three artifacts (project file, deck file, light deck), each
+ * run as a background job — the Jobs dock tracks progress (reading and
+ * re-encoding photos, resolving remote sources) and offers the produced
+ * file again if the browser's download didn't land. The review and the
+ * version history appear as one-line summaries linking to their own pages
+ * (Review, History); deck identity (id, label) is edited on the Deck info
+ * tab.
  */
 
 export function meta({}: Route.MetaArgs) {
@@ -174,9 +172,9 @@ export default function ExportPage() {
         </p>
       )}
 
-      <ValidationReport issues={issues} />
+      <ReviewSummary issues={issues} projectId={projectId ?? ""} />
 
-      <VersionHistory project={project} onRestored={setProject} />
+      <HistorySummary project={project} />
 
       <section className="mb-6" data-testid="export-options">
         <h2 className="font-semibold mb-2">Export</h2>
@@ -294,39 +292,42 @@ export default function ExportPage() {
   );
 }
 
-function ValidationReport({ issues }: { issues: ExportIssue[] }) {
-  const errors = issues.filter((i) => i.severity === "error");
-  const warnings = issues.filter((i) => i.severity === "warning");
-  const infos = issues.filter((i) => i.severity === "info");
-  const clean = errors.length === 0 && warnings.length === 0;
+/** One-line review summary: the issue totals, with the full report a link
+ *  away on the Review page (pre-filtered to the cards that need fixing). */
+function ReviewSummary({ issues, projectId }: { issues: ExportIssue[]; projectId: string }) {
+  const errors = issues.filter((i) => i.severity === "error").length;
+  const warnings = issues.filter((i) => i.severity === "warning").length;
+  const infos = issues.filter((i) => i.severity === "info").length;
+  const parts: Array<{ count: number; label: string; color?: string }> = [
+    { count: errors, label: "error", color: "var(--danger)" },
+    { count: warnings, label: "warning", color: "var(--ink)" },
+    { count: infos, label: "note", color: "var(--muted)" },
+  ];
+  const shown = parts.filter((p) => p.count > 0);
   return (
-    <section className="mb-6" data-testid="validation-report">
-      <h2 className="font-semibold mb-2">
-        Review {clean && infos.length === 0 && "— no issues 🎉"}
-      </h2>
-      {issues.length > 0 && (
-        <ul className="rounded-lg border bg-white divide-y" style={{ borderColor: "var(--border)" }}>
-          {issues.map((issue, i) => (
-            <li
-              key={i}
-              className="px-4 py-2 text-sm"
-              style={{
-                color:
-                  issue.severity === "error"
-                    ? "var(--danger)"
-                    : issue.severity === "info"
-                      ? "var(--muted)"
-                      : "var(--ink)",
-              }}
-              data-testid={`issue-${issue.severity}`}
-            >
-              {issue.severity === "error" ? "✕ " : issue.severity === "info" ? "ℹ " : "⚠ "}
-              {issue.message}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
+    <section className="mb-6" data-testid="review-summary">
+      <h2 className="font-semibold mb-2">Review</h2>
+      <p className="text-sm">
+        {shown.length === 0 ? (
+          "No issues 🎉 — "
+        ) : (
+          <>
+            {shown.map((p, i) => (
+              <span key={p.label}>
+                {i > 0 && ", "}
+                <span style={{ color: p.color }} data-testid={`issues-${p.label}s`}>
+                  {p.count} {p.label}
+                  {p.count === 1 ? "" : "s"}
+                </span>
+              </span>
+            ))}{" — "}
+          </>
+        )}
+        <Link to={`/project/${projectId}/review${issues.length ? "?filter=issues" : ""}`} className="underline">
+          see the full review
+        </Link>.
+      </p>
+      <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
         <span style={{ color: "var(--danger)" }}>Red</span> issues can keep the flashcards app from
         importing the deck. <span style={{ color: "var(--ink)" }}>Amber</span> ones export fine but
         are worth fixing before you share. Export isn't blocked either way.
@@ -335,226 +336,55 @@ function ValidationReport({ issues }: { issues: ExportIssue[] }) {
   );
 }
 
-function VersionHistory({
-  project,
-  onRestored,
-}: {
-  project: Project;
-  onRestored: (p: Project) => void;
-}) {
+/** How many versions the deck has and when the last one landed — the full
+ *  list (with restore) lives on the History page. */
+function HistorySummary({ project }: { project: Project }) {
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
-  const [hideAutosaves, setHideAutosaves] = useState(false);
-  // The authorship every new version is stamped with — editable right here,
-  // since this is where the stamped history is visible.
-  const [author, setAuthor] = useState(() => getAuthor());
-  const [showAuthorEditor, setShowAuthorEditor] = useState(false);
-
-  // The filter is display-only: autosave commits stay in the repository and
-  // remain restorable — they just leave the visible list when hidden.
-  const visible = useMemo(() => {
-    if (versions === null) return null;
-    return hideAutosaves ? versions.filter((v) => !isAutosaveCommit(v.message)) : versions;
-  }, [versions, hideAutosaves]);
-  const total = versions?.length ?? 0;
-  const hidden = hideAutosaves ? total - (visible?.length ?? 0) : 0;
-
-  const refresh = useCallback(async () => {
-    const list = await listVersions(project.id);
-    setVersions(list);
-  }, [project.id]);
-
-  // Refresh on deck changes and via the Refresh button. Deliberately NOT
-  // keyed on `versions`: refresh() writes versions, and an effect that both
-  // writes and depends on its own output re-runs forever.
+  // Re-read when the deck changes (a background autosave may have landed a
+  // version while this page sat open) and via the deck's updatedAt.
   useEffect(() => {
-    void refresh();
-  }, [refresh, project.updatedAt]);
+    let cancelled = false;
+    void listVersions(project.id)
+      .then((list) => { if (!cancelled) setVersions(list); })
+      .catch(() => { if (!cancelled) setVersions(null); });
+    return () => { cancelled = true; };
+  }, [project.id, project.updatedAt]);
 
-  // Poll only while the list is empty, so a freshly created deck's first
-  // commit (ensureRepo, running moments after open) appears without
-  // requiring another edit. The guard reads state; it never re-arms the
-  // effect from its own result.
-  const historyEmpty = versions !== null && versions.length === 0;
-  useEffect(() => {
-    if (!historyEmpty) return;
-    const t = setInterval(() => void refresh(), 3000);
-    return () => clearInterval(t);
-  }, [historyEmpty, refresh]);
-
-  // The project page kicks off the initial commit, but this page can be the
-  // first (or only) place a deck is opened — make sure history exists here
-  // too. ensureRepo is a no-op when the repo already has commits.
-  useEffect(() => {
-    void ensureRepo(project).catch(() => undefined);
-  }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const saveVersion = async () => {
-    setBusy("save");
-    try {
-      const oid = await commitDeckVersion(project, undefined, message.trim() || undefined, { silent: false });
-      setMessage("");
-      await refresh();
-      setStatus(oid ? "Version saved." : "No changes since the last version — nothing to save.");
-    } catch (err) {
-      setStatus(`Saving the version failed: ${err instanceof Error ? err.message : err}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const restore = async (oid: string) => {
-    if (!confirm("Restore this version? Current changes stay in the history.")) return;
-    setBusy(oid);
-    try {
-      // Drop any pending autosave first: a flush firing mid-restore would
-      // commit the pre-restore state alongside the restored photo files —
-      // an incoherent version in the history. The checkpoint below commits
-      // the current state explicitly, so nothing is lost by cancelling.
-      cancelAutoVersion(project.id);
-      // Checkpoint the current state first, so the "current changes stay
-      // in the history" promise holds even when a pending autosave hasn't
-      // landed yet — and abort the restore if that fails.
-      await commitDeckVersion(project, undefined, `Before restoring ${oid.slice(0, 8)}`, { silent: false });
-      // restoreVersion swaps files + record atomically; the returned project
-      // keeps this deck's id even when the commit predates a rename.
-      const result = await restoreVersion(project.id, oid);
-      if (result) {
-        onRestored(result.project);
-        // An in-flight flush that started before the cancel can re-add the
-        // pre-restore state once its own commit lands — drop it again so
-        // the restored state is what history records next.
-        cancelAutoVersion(project.id);
-        await commitDeckVersion(result.project, undefined, `Restored version ${oid.slice(0, 8)}`);
-        await refresh();
-        setStatus(`Restored ${oid.slice(0, 8)}.`);
-      }
-    } catch (err) {
-      setStatus(`Restore failed: ${err instanceof Error ? err.message : err}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
+  const latest = versions !== null && versions.length > 0 ? versions[0] : null;
   return (
-    <section className="mb-6" data-testid="version-history">
-      <h2 className="font-semibold mb-1">Version history</h2>
-      <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-        Every deck is its own git repository in your browser. Changes commit automatically as you
-        work — within about {Math.round(AUTO_VERSION_DEBOUNCE_MS / 1000)} seconds after you stop
-        editing, on any tab, and when you leave a page; save a named version before big changes. New
-        versions are authored as{" "}
-        <button
-          type="button"
-          className="underline"
-          onClick={() => setShowAuthorEditor(true)}
-          data-testid="version-author"
-          title="Change the name and email stamped onto versions"
-        >
-          {author.name} &lt;{author.email}&gt;
-        </button>
-        .
+    <section className="mb-6" data-testid="history-summary">
+      <h2 className="font-semibold mb-2">Version history</h2>
+      <p className="text-sm">
+        {versions === null ? (
+          "Loading history… — "
+        ) : latest ? (
+          <>
+            {versions!.length} version{versions!.length === 1 ? "" : "s"} — last saved{" "}
+            {relativeTime(latest.timestamp)} ({new Date(latest.timestamp).toLocaleString()}).{" "}
+          </>
+        ) : (
+          "No versions yet — changes save automatically as you work. "
+        )}
+        <Link to={`/project/${project.id}/history`} className="underline">
+          see the version history
+        </Link>.
       </p>
-      <div className="flex gap-2 mb-3">
-        <input
-          className="field text-sm"
-          style={{ maxWidth: 260 }}
-          placeholder="Version note (optional) — e.g. “before renaming pass”"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          aria-label="Version note"
-          data-testid="version-note"
-        />
-        <button
-          className="btn-secondary"
-          onClick={() => void saveVersion()}
-          disabled={busy !== null}
-          data-testid="save-version"
-        >
-          {busy === "save" ? "Saving…" : "Save a version"}
-        </button>
-        <button className="btn-secondary" onClick={() => void refresh()} disabled={busy !== null}>
-          Refresh
-        </button>
-        <label className="inline-flex items-center gap-1.5 text-sm cursor-pointer whitespace-nowrap">
-          <input
-            type="checkbox"
-            checked={hideAutosaves}
-            onChange={(e) => setHideAutosaves(e.target.checked)}
-            data-testid="hide-autosaves"
-          />
-          Hide autosaves
-        </label>
-      </div>
-      {status && (
-        <p className="text-sm mb-2" data-testid="version-status" style={{ color: "var(--muted)" }}>
-          {status}
-        </p>
-      )}
-      {visible !== null && hidden > 0 && (
-        <p className="text-xs mb-2" data-testid="autosaves-hidden" style={{ color: "var(--muted)" }}>
-          Hiding {hidden} autosave {hidden === 1 ? "version" : "versions"}.
-        </p>
-      )}
-      {visible === null ? (
-        <p className="text-sm" style={{ color: "var(--muted)" }}>
-          Loading history…
-        </p>
-      ) : total === 0 ? (
-        <p className="text-sm" style={{ color: "var(--muted)" }}>
-          No versions yet — the first commit lands shortly after you make a change.
-        </p>
-      ) : visible.length === 0 ? (
-        <p className="text-sm" style={{ color: "var(--muted)" }}>
-          Every version so far is an autosave — untick “Hide autosaves” to see them.
-        </p>
-      ) : (
-        <ul className="rounded-lg border bg-white divide-y" style={{ borderColor: "var(--border)" }}>
-          {visible.map((v) => (
-            <li key={v.oid} className="flex items-center gap-3 px-4 py-2 text-sm">
-              <code className="text-xs" style={{ color: "var(--muted)" }}>
-                {v.oid.slice(0, 8)}
-              </code>
-              <span className="flex-1 truncate" title={v.message}>
-                {v.message.split("\n")[0]}
-              </span>
-              {v.authorName && (
-                <span
-                  className="text-xs whitespace-nowrap truncate max-w-[10rem]"
-                  style={{ color: "var(--muted)" }}
-                  title={v.authorEmail ? `${v.authorName} <${v.authorEmail}>` : v.authorName}
-                  data-testid={`version-author-${v.oid.slice(0, 8)}`}
-                >
-                  {v.authorName}
-                </span>
-              )}
-              <span className="text-xs whitespace-nowrap" style={{ color: "var(--muted)" }}>
-                {new Date(v.timestamp).toLocaleString()}
-              </span>
-              <button
-                className="btn-secondary !py-1 !px-2 text-xs"
-                onClick={() => void restore(v.oid)}
-                disabled={busy !== null}
-                data-testid={`restore-${v.oid.slice(0, 8)}`}
-              >
-                {busy === v.oid ? "Restoring…" : "Restore"}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {showAuthorEditor && (
-        <AuthorPromptModal
-          heading="Version authorship"
-          skippable={false}
-          onClose={() => {
-            setShowAuthorEditor(false);
-            setAuthor(getAuthor());
-          }}
-        />
-      )}
     </section>
   );
+}
+
+/** Coarse age for the summary line; the History page has exact timestamps. */
+function relativeTime(ts: number): string {
+  const seconds = Math.round((Date.now() - ts) / 1000);
+  if (seconds < 45) return "just now";
+  if (seconds < 3600) {
+    const minutes = Math.round(seconds / 60);
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.round(seconds / 3600);
+    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  }
+  const days = Math.round(seconds / 86400);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }

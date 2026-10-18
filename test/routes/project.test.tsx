@@ -42,7 +42,7 @@ describe("project route", () => {
       Array.from(screen.getByTestId("project-tabs").querySelectorAll("a")).map((a) =>
         a.getAttribute("data-testid"),
       ),
-    ).toEqual(["tab-info", "tab-cards", "tab-review", "tab-export"]);
+    ).toEqual(["tab-info", "tab-cards", "tab-review", "tab-history", "tab-export"]);
     // The name/description editor moved to the Deck info tab.
     expect(screen.queryByTestId("deck-label")).not.toBeInTheDocument();
   });

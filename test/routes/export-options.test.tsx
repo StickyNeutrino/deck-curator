@@ -9,6 +9,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import ExportPage from "~/routes/export";
 import { newProject } from "~/lib/importSpreadsheet";
 import { saveProject } from "~/lib/store";
+import * as store from "~/lib/store";
 import { getJobs, resetJobs } from "~/lib/jobs";
 
 const captured = vi.hoisted(() => ({ calls: [] as Array<{ kind: string; options: unknown }> }));
@@ -120,4 +121,23 @@ it("exports the light deck", async () => {
   await user.click(screen.getByTestId("export-lite"));
   await waitFor(() => expect(captured.calls).toHaveLength(1));
   expect(captured.calls[0].kind).toBe("lite");
+});
+
+it("re-reads the deck when a background write lands while the page is open", async () => {
+  const p = newProject("Follow Writes");
+  await saveProject(p);
+  // The page loads the record once; a background job (which registers no
+  // live updater here) keeps writing the deck — the page must follow the
+  // store instead of working from its initial snapshot.
+  const getSpy = vi.spyOn(store, "getProject");
+  const initial = getSpy.mock.calls.length;
+  renderExport(p.id);
+  await waitFor(() => expect(getSpy.mock.calls.length).toBeGreaterThan(initial));
+  const afterLoad = getSpy.mock.calls.length;
+
+  // A background job writes the deck (its own record change, not the page's).
+  await store.saveProject({ ...structuredClone(p), description: "written while open" });
+
+  // The record change notifies the page, which re-reads the store.
+  await waitFor(() => expect(getSpy.mock.calls.length).toBe(afterLoad + 1));
 });

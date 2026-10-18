@@ -63,9 +63,9 @@ test("create → edit → export a deck", async ({ page }) => {
   await page.getByTestId("save-species").click();
   await expect(page.getByTestId("save-species")).toContainText("Save");
 
-  // Export page: validation, then download the deck.
+  // Export page: the review summary, then download the deck.
   await page.goto(`/project/e2e-canyon/export`);
-  await expect(page.getByTestId("validation-report")).toBeVisible();
+  await expect(page.getByTestId("review-summary")).toBeVisible();
   // Three artifacts on offer; shrinking is off until asked for.
   await expect(page.getByTestId("export-project")).toBeVisible();
   await expect(page.getByTestId("export-deck")).toBeVisible();
@@ -246,7 +246,7 @@ test("version history: auto-commits once per change and lists versions", async (
   await page.waitForURL(/\/project\/vc-check/);
 
   // The initial commit lands on open (ensureRepo), shortly after load.
-  await page.goto("/project/vc-check/export");
+  await page.goto("/project/vc-check/history");
   await page.waitForFunction(() => {
     const section = document.querySelector('[data-testid="version-history"]');
     return section && section.querySelectorAll("li").length >= 1;
@@ -266,7 +266,7 @@ test("version history: auto-commits once per change and lists versions", async (
   await page.getByRole("button", { name: "Close" }).click();
   await page.waitForTimeout(15000);
 
-  await page.goto("/project/vc-check/export");
+  await page.goto("/project/vc-check/history");
   await page.waitForFunction((before: number) => {
     const section = document.querySelector('[data-testid="version-history"]');
     return section && section.querySelectorAll("li").length > before;
@@ -279,7 +279,7 @@ test("version history: auto-commits once per change and lists versions", async (
 
   // Idle beyond the debounce → no further commits.
   await page.waitForTimeout(13000);
-  await page.goto("/project/vc-check/export");
+  await page.goto("/project/vc-check/history");
   await page.waitForTimeout(2000);
   const afterIdle = await page.evaluate(
     () => document.querySelectorAll('[data-testid="version-history"] li').length,
