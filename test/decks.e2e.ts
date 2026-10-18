@@ -62,9 +62,9 @@ async function openSpecies(page: Page, name: string) {
   await page.waitForURL(/\/species\//);
 }
 
-/** Jump to the export page and wait until the deck's first commit is listed. */
-async function gotoExportPage(page: Page, projectId: string) {
-  await page.goto(`/project/${projectId}/export`);
+/** Jump to the history page and wait until the deck's first commit is listed. */
+async function gotoHistoryPage(page: Page, projectId: string) {
+  await page.goto(`/project/${projectId}/history`);
   await page.waitForFunction(
     () => {
       const section = document.querySelector('[data-testid="version-history"]');
@@ -78,6 +78,11 @@ async function gotoExportPage(page: Page, projectId: string) {
 async function openExportTab(page: Page, projectId: string) {
   await page.getByTestId("tab-export").click();
   await page.waitForURL(new RegExp(`/project/${projectId}/export$`));
+}
+
+async function openHistoryTab(page: Page, projectId: string) {
+  await page.getByTestId("tab-history").click();
+  await page.waitForURL(new RegExp(`/project/${projectId}/history$`));
 }
 
 async function openCardsTab(page: Page, projectId: string) {
@@ -228,7 +233,7 @@ test("edits save automatically and survive a reload", async ({ page }) => {
 
 test("version history: named saves, no-change save, and hiding autosaves", async ({ page }) => {
   const id = await createDeck(page, "Version Deck");
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
 
   await saveNamedVersion(page, "before the big rename");
 
@@ -242,7 +247,7 @@ test("version history: named saves, no-change save, and hiding autosaves", async
   // the cards page is left, so it lands shortly after this navigation.
   await openCardsTab(page, id);
   await addSpeciesByList(page, ["Coast Live Oak"]);
-  await openExportTab(page, id);
+  await openHistoryTab(page, id);
   await expect(async () => {
     await page.getByRole("button", { name: "Refresh" }).click();
     await expect(page.getByTestId("version-history")).toContainText(
@@ -263,17 +268,17 @@ test("version history: named saves, no-change save, and hiding autosaves", async
 
 test("restore an earlier version from the history", async ({ page }) => {
   const id = await createDeck(page, "Restore Deck");
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
 
   // Two named checkpoints: one species, then two.
   await openCardsTab(page, id);
   await addSpeciesByList(page, ["Coast Live Oak"]);
-  await openExportTab(page, id);
+  await openHistoryTab(page, id);
   await saveNamedVersion(page, "one species");
 
   await openCardsTab(page, id);
   await addSpeciesByList(page, ["Dudleya edulis"], 2);
-  await openExportTab(page, id);
+  await openHistoryTab(page, id);
   await saveNamedVersion(page, "two species");
 
   // Restore the "one species" checkpoint. The flow asks for confirmation —
@@ -316,7 +321,8 @@ test("deck export ships the manifest and photos (no history)", async ({ page }) 
   await page.getByTestId("save-species").click();
   await expect(page.getByTestId("save-species")).toContainText("Saved");
 
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
+  await openExportTab(page, id);
   const { entries } = await exportAndUnzip(page, "export-deck", new RegExp(`${id}\\.deck$`));
   const manifest = manifestOf(entries);
 
@@ -355,7 +361,8 @@ test("deck export ships the manifest and photos (no history)", async ({ page }) 
 test("project export (.zip) carries the git history", async ({ page }) => {
   const id = await createDeck(page, "Backup Deck");
   await addSpeciesByList(page, ["Coast Live Oak"]);
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
+  await openExportTab(page, id);
 
   const { entries } = await exportAndUnzip(page, "export-project", new RegExp(`${id}\\.zip$`));
   const manifest = manifestOf(entries);
@@ -368,7 +375,8 @@ test("project export (.zip) carries the git history", async ({ page }) => {
 test("light deck exports manifest-only and refuses to re-import", async ({ page }) => {
   const id = await createDeck(page, "Lite Deck");
   await addSpeciesByList(page, ["Coast Live Oak"]);
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
+  await openExportTab(page, id);
 
   const { entries, file } = await exportAndUnzip(
     page,
@@ -396,7 +404,8 @@ test("light deck export refuses decks with bundled photos", async ({ page }) => 
   await page.getByTestId("save-species").click();
   await expect(page.getByTestId("save-species")).toContainText("Saved");
 
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
+  await openExportTab(page, id);
   await page.getByTestId("export-lite").click();
   await expect(page.getByTestId("export-page-error")).toContainText(/light deck/);
   await expect(page.getByTestId("export-done")).toHaveCount(0);
@@ -495,7 +504,8 @@ test("export → import round trip preserves species and photos", async ({ page 
   await page.getByTestId("save-species").click();
   await expect(page.getByTestId("save-species")).toContainText("Saved");
 
-  await gotoExportPage(page, id);
+  await gotoHistoryPage(page, id);
+  await openExportTab(page, id);
   const { file } = await exportAndUnzip(page, "export-deck", new RegExp(`${id}\\.deck$`));
 
   // Import the very file that was just downloaded: the id is taken (the
