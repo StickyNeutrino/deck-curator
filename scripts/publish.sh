@@ -20,7 +20,10 @@ else
   "$(dirname "$0")/ci.sh"
 fi
 
-docker build . -t "$IMAGE"
+# Pin the target: docker build without one builds the Dockerfile's LAST
+# stage, and the ci stage once sat last — the deploy scripts then pushed the
+# Playwright test image as the "server" (see the Dockerfile's ci comment).
+docker build --target runtime . -t "$IMAGE"
 docker push "$IMAGE"
 
 kubectl apply -f k8s/deck-curator-deployment.yaml

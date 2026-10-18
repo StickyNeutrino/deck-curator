@@ -18,28 +18,14 @@ COPY . /app/
 # SPA build (ssr: false) — the whole app compiles into build/client
 RUN npm run build
 
-FROM node:26-alpine
-COPY ./package.json /app/
-COPY --from=production-dependencies-env /app/node_modules /app/node_modules
-# The built single-page client, served statically with history fallback
-COPY --from=build-env /app/build/client /app/build/client
-
-WORKDIR /app
-# Run as the image's `node` user (uid 1000) instead of root; the k8s
-# manifests' runAsUser matches it. serve only reads build/client, so it
-# needs no privileges and no writable directories.
-USER node
-# Invoke serve's binary directly: npm/npx want to write logs and caches
-# under $HOME, which the read-only root filesystem (see the deployment
-# manifests' securityContext) forbids. The listen port is pinned to the
-# container port the service targets instead of relying on serve's default.
-CMD ["./node_modules/.bin/serve", "./build/client", "--single", "--listen", "3000"]
-
 # ---------- CI (docker build --target ci) ----------
-# A throwaway test-runner image, never pushed: dev dependencies stay off the
-# registry, and the shipped image above inherits nothing from this stage.
-# scripts/ci.sh runs it as the gate both deploy scripts must pass before
-# anything is pushed or rolled out.
+# A throwaway test-runner image, only ever built via `--target ci` (see
+# scripts/ci.sh): dev dependencies stay off the registry, and the shipped
+# `runtime` stage below inherits nothing from this stage. It sits BEFORE the
+# runtime stage on purpose: `docker build` without `--target` builds the
+# LAST stage, and when this was the last one the deploy scripts silently
+# pushed this image instead of the server (1GB Playwright image, nothing
+# listening on :3000 — the crash loop of 2026-10-17).
 #
 # Base: the official Playwright image, which bakes the browsers AND their
 # system libraries into the FROM layer. Browser downloads therefore depend
@@ -69,3 +55,23 @@ COPY --from=build-env /app/build/client /app/build/client
 # the e2e run.
 ENV CI=1 E2E_PROD=1
 CMD ["sh", "-c", "npx playwright install chromium && npm run typecheck && npm run test:run && npx playwright test"]
+
+# The shipped image. Kept as the LAST stage, and also pinned explicitly via
+# `--target runtime` in the deploy scripts, so no future stage appended
+# below this one can trick a plain `docker build` into shipping it.
+FROM node:26-alpine AS runtime
+COPY ./package.json /app/
+COPY --from=production-dependencies-env /app/node_modules /app/node_modules
+# The built single-page client, served statically with history fallback
+COPY --from=build-env /app/build/client /app/build/client
+
+WORKDIR /app
+# Run as the image's `node` user (uid 1000) instead of root; the k8s
+# manifests' runAsUser matches it. serve only reads build/client, so it
+# needs no privileges and no writable directories.
+USER node
+# Invoke serve's binary directly: npm/npx want to write logs and caches
+# under $HOME, which the read-only root filesystem (see the deployment
+# manifests' securityContext) forbids. The listen port is pinned to the
+# container port the service targets instead of relying on serve's default.
+CMD ["./node_modules/.bin/serve", "./build/client", "--single", "--listen", "3000"]
