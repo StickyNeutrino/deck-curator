@@ -154,6 +154,7 @@ export default function Home() {
               type="file"
               accept=".zip,.deck,.deck.lite"
               className="hidden"
+              data-testid="import-file"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) void importArchive(file);
