@@ -32,7 +32,9 @@ describe("save freshness guard", () => {
         photos: [{ id: "p1", role: "main", fileKey: "a.jpg", credit: { observer: "A", license: "cc0" } }],
       }),
     );
-    await saveProject(p);
+    // Explicit stamps: a saveProject auto-stamp could land in the same
+    // millisecond as newProject's, which must not decide the test.
+    await saveProject(p, "2026-01-01T00:00:00.000Z");
     await putFile(p.id, "a.jpg", new Blob(["old-bytes"]));
 
     const { result } = renderHook(() => useProjectDoc(p.id));
@@ -45,6 +47,7 @@ describe("save freshness guard", () => {
     const restored = structuredClone(p);
     restored.description = "restored state";
     restored.species[0].photos = [];
+    restored.updatedAt = "2025-06-01T00:00:00.000Z";
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const holder = withRecordLock(p.id, async () => {
@@ -52,7 +55,6 @@ describe("save freshness guard", () => {
       await restoreSnapshot(p.id, new Map(), new Set(), restored);
     });
     await sleep(20); // the holder owns the lock
-    expect(holder).toBeInstanceOf(Promise);
 
     act(() => {
       result.current.update((d) => {
@@ -79,7 +81,9 @@ describe("save freshness guard", () => {
   it("a retry that outlives the page does not clobber a newer store write", async () => {
     saveRetry.delayMs = 200;
     const p = newProject("Retry Outlives");
-    await saveProject(p);
+    // Explicit stamp: the job's later auto-stamped write must not collide
+    // with the fixture's stamp, or the freshness check would read "unchanged".
+    await saveProject(p, "2026-01-01T00:00:00.000Z");
     const realSave = store.saveProject;
     let failures = 1;
     const spy = vi.spyOn(store, "saveProject").mockImplementation(async (proj, at) => {
@@ -133,7 +137,7 @@ describe("save freshness guard", () => {
     const p = newProject("Job During Restore");
     p.species.push(makeSpecies({ commonName: "Oak", category: "plants" }));
     p.description = "historical description";
-    await saveProject(p);
+    await saveProject(p, "2026-01-01T00:00:00.000Z");
     await putFile(p.id, "a.jpg", new Blob(["bytes"]));
     await ensureRepo(p);
     const version = (await listVersions(p.id))[0];
@@ -141,7 +145,7 @@ describe("save freshness guard", () => {
     // The live record moves on after the version was committed.
     const live = structuredClone(p);
     live.description = "current description";
-    await saveProject(live);
+    await saveProject(live, "2026-03-01T00:00:00.000Z");
 
     const { result } = renderHook(() => useProjectDoc(p.id));
     await waitFor(() => expect(result.current.project).not.toBeNull());

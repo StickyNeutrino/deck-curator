@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
-import { getProject, saveProject, withRecordLock } from "./store";
+import { getProject, saveProject, withRecordLock, recordGeneration } from "./store";
 import { scheduleAutoVersion } from "./useAutoVersion";
 import { isRestoring } from "./versioning";
 import { isStorageFullError } from "./browserStorage";
@@ -8,37 +8,47 @@ import type { Project } from "./types";
 /** `update` of each project page currently mounted, by project id. */
 const liveUpdaters = new Map<string, (mutate: (draft: Project) => void) => void>();
 
-/** Base stamp per page snapshot: the `updatedAt` the store had when the
- *  snapshot's content was current. A snapshot inherits its base from the
- *  state it was cloned from; after a successful save the base becomes the
- *  stamp just written (the store then holds exactly that content). A save
- *  whose stored stamp differs from its snapshot's base means the record
- *  changed underneath the page (a version restore, another tab, a direct
- *  job write) — writing the snapshot back would clobber the newer state,
- *  so the save skips.
+/** Base per page snapshot: the store state (updatedAt stamp and this tab's
+ *  write generation) that the snapshot's content corresponds to. A snapshot
+ *  inherits its base from the state it was cloned from; after a successful
+ *  save the base becomes the record just written. A save whose stored stamp
+ *  or generation differs from its snapshot's base means the record changed
+ *  underneath the page (a version restore, another tab, a direct job
+ *  write) — writing the snapshot back would clobber the newer state, so
+ *  the save skips. The generation closes the hole the stamp alone leaves:
+ *  restoring the latest version swaps in a record whose updatedAt equals
+ *  the page's base stamp.
  *
  *  The base is stored as a parent CHAIN, resolved lazily: a snapshot
  *  created while the previous save is still in flight must inherit the
- *  stamp that save will land, not the older stamp still valid at clone
- *  time. Each entry is either the stamp of the save that made the store
+ *  base that save will land, not the older base still valid at clone
+ *  time. Each entry is either the base of the save that made the store
  *  hold this snapshot's content, or the parent snapshot it descends from.
  *  Keyed per snapshot object: adopting a fresh record into state must not
  *  retroactively "validate" an older queued snapshot. */
-type SnapshotBase = string | { parent: Project };
+type SnapshotBase = { stamp: string; generation: number } | { parent: Project };
 const snapshotBases = new WeakMap<Project, SnapshotBase>();
 
-function baseStampOf(snapshot: Project): string {
+function baseOf(snapshot: Project): { stamp: string; generation: number } {
   let current: Project = snapshot;
   for (;;) {
     const base = snapshotBases.get(current);
-    if (base === undefined) return current.updatedAt;
-    if (typeof base === "string") return base;
-    current = base.parent;
+    if (base === undefined) {
+      return { stamp: current.updatedAt, generation: recordGeneration(current.id) };
+    }
+    if ("parent" in base) {
+      current = base.parent;
+      continue;
+    }
+    return base;
   }
 }
 
 function adoptSnapshot(snapshot: Project): void {
-  snapshotBases.set(snapshot, snapshot.updatedAt);
+  snapshotBases.set(snapshot, {
+    stamp: snapshot.updatedAt,
+    generation: recordGeneration(snapshot.id),
+  });
 }
 
 /** Re-exported so existing import sites keep working; the lock lives in
@@ -255,7 +265,8 @@ export function useProjectDoc(projectId: string | undefined) {
               outcome = "missing";
               return;
             }
-            if (stored.updatedAt !== baseStampOf(project)) {
+            const base = baseOf(project);
+            if (stored.updatedAt !== base.stamp || recordGeneration(project.id) !== base.generation) {
               outcome = "stale";
               return;
             }
@@ -264,7 +275,7 @@ export function useProjectDoc(projectId: string | undefined) {
             // freshness check compares against.
             const stamp = new Date().toISOString();
             await saveProject(project, stamp);
-            snapshotBases.set(project, stamp);
+            snapshotBases.set(project, { stamp, generation: recordGeneration(project.id) });
           });
           if (outcome === "saved") {
             setSaveError(null);

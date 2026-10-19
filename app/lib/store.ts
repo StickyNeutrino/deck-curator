@@ -35,6 +35,24 @@ export function withRecordLock<T>(projectId: string, fn: () => Promise<T>): Prom
   return run;
 }
 
+/** Monotonic write generation per project record, bumped by every record-
+ *  mutating operation this tab performs (save, rename, restore swap,
+ *  deletion). Page saves compare the generation their snapshot was based
+ *  on against the current one before writing: a restore swaps in a record
+ *  whose updatedAt can coincide with the page's base stamp (restoring the
+ *  latest version), so the stamp alone cannot tell "unchanged" from
+ *  "swapped underneath" — the generation can, within this tab. Cross-tab
+ *  writes stay covered by the stamp comparison. */
+const recordGenerations = new Map<string, number>();
+
+export function recordGeneration(projectId: string): number {
+  return recordGenerations.get(projectId) ?? 0;
+}
+
+function bumpRecordGeneration(projectId: string): void {
+  recordGenerations.set(projectId, (recordGenerations.get(projectId) ?? 0) + 1);
+}
+
 interface CacheRecord {
   key: string;
   body: unknown;
@@ -84,6 +102,7 @@ export async function saveProject(project: Project, at?: string): Promise<void> 
   const tx = database.transaction("projects", "readwrite");
   tx.objectStore("projects").put(record);
   await tx.done;
+  bumpRecordGeneration(project.id);
   notifyProjectChange(project.id);
 }
 
@@ -142,6 +161,8 @@ export async function renameProject(oldId: string, newId: string): Promise<void>
     projects.delete(oldId);
     projects.put(moved);
     await tx.done;
+    bumpRecordGeneration(oldId);
+    bumpRecordGeneration(newId);
     // Keep any cached blobs warm under the new prefix — and invalidate the
     // old prefix's generations, so a fill that read the old id mid-move
     // can't land its stale bytes after the rebuild.
@@ -195,6 +216,7 @@ export async function restoreSnapshot(
   }
   tx.objectStore("projects").put(structuredClone(project));
   await tx.done;
+  bumpRecordGeneration(projectId);
   // The restore may have swapped bytes under existing keys — stale cache
   // entries would render the pre-restore photos.
   dropCachedBlobs(`${projectId}/`);
@@ -218,6 +240,7 @@ export async function deleteProject(id: string): Promise<void> {
     const files = tx.objectStore("files");
     for (const k of doomed) files.delete(k);
     await tx.done;
+    bumpRecordGeneration(id);
   });
   dropCachedBlobs(`${id}/`);
   notifyFileChange(id, null);
